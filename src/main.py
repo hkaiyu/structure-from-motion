@@ -87,7 +87,20 @@ def sfmRun(datasetDir, viewer):
     sfm = SfmData()
     sfm.setExtractor(FeatureExtractor("SIFT", nfeatures=5000, contrastThreshold=0.03))
     sfm.setMatcher(matcher = FeatureMatcher("FLANN"))
+    # Key points of all images up front,
+
+    # Match points for each possible pair of images 
+    #   - Whatever pair has most matches is our starting point
+    #       - Sorted arg - for an ordered dataset
+    #   - Calculate Essential matrix (calibrated since we have intrinsic parameters) only for Triangulations 
+    #       - 
+    #       - have matches for each pair, but don't need ess matrix for each since we 
+    #   - Global coordinate is Image 1 - 
+    #       - Iteratively update 
+    #   - Truncate 3dPoints: F32 to integer?
+    #       - Need to threshold points/round to relate points in point cloud better
     
+
     # Construct camera matrix
     # This block is how the github dataset constructs the camera matrix.
     # We can prob manipulate these variables for any other camera/dataset we have
@@ -119,7 +132,9 @@ def sfmRun(datasetDir, viewer):
 
     pts1 = np.float32([kp1[m.queryIdx].pt for m in matches])
     pts2 = np.float32([kp2[m.trainIdx].pt for m in matches])
-
+    
+    # Iterative Section from here
+    
     # Calculate essential matrix (needs to be done for every pair of images)
     E, mask_E = cv.findEssentialMat(pts1, pts2, sfm.K, method=cv.RANSAC, prob=0.999, threshold=1.0)
 
