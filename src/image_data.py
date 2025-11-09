@@ -4,7 +4,7 @@ class ImageData:
         self.idx = None
         self.path = None
         self.img = None
-        self.img_gray = None
+        # self.img_gray = None
         # Keypoints and descriptors
         self.kp = None
         self.des = None
@@ -15,3 +15,9 @@ class ImageData:
     def setPose(self, R, t):
         self.R = R
         self.t = t
+
+    def getKeypoints(self):
+        return self.kp
+
+    def getDescriptors(self):
+        return self.des
