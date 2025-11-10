@@ -21,7 +21,20 @@ class FeatureMatcher:
         """Returns a list of matches sorted by distance."""
         matches = self.matcher.match(des1, des2)
         return sorted(matches, key=lambda x: x.distance)
-
+  def knnMatch(self, des1, des2, ratio = True):
+    """Perform KNN matching and apply ratio test based on input"""
+    raw_matches = self.matcher.knnMatch(des1, des2, k=2)
+      
+    if ratio:
+        good = []
+        for m, n in raw_matches:
+            if m.distance<0.75 * n.distance:
+                good.append(m)
+        return good
+    else:
+        # Probably never actually want this, prob should always be doing ratio test
+        return raw_matches
+      
   def drawMatches(self, img1, kp1, img2, kp2, matches, max_matches=50):
         """Draw the best {max_matches} matches."""
         return cv.drawMatches(img1, kp1, img2, kp2,
