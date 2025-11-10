@@ -35,10 +35,8 @@ class SfmData:
         self.matcher = None
         # pairwise matches cache: key is (i, j) with i < j, value is list[cv.DMatch]
         self.pairMatches = {}
-        # TODO: Maintain 2D-3D association maps for track management (used by incremental SfM):
-        #   - self.kp_to_point = {}  # (img_idx, kp_idx) -> point_id
-        #   - self.point_observations = {}  # point_id -> list of (img_idx, kp_idx)
-        #   - Update these when triangulating and when adding observations for existing points
+        self.kp_to_point = {}  # (img_idx, kp_idx) -> point_id
+        # point observations stored in pt, pt.correspondences
 
     def setCameraIntrinsics(self, focal_length_35mm, im_width, im_height):
         focal_length = max(im_width, im_height) * focal_length_35mm / 35.0
@@ -77,21 +75,21 @@ class SfmData:
         return self.images.get(img_index, None)
     
     # add point, will add 3d point and relevant correspondences
-    def addPoint(self, coord, correspondences):
+    def addPoint(self, coord, img_i_idx, img_i_kp_idx, img_j_idx, img_j_kp_idx):
         pt = PointData()
         
         pt.idx = self.pointCount
         self.pointCount += 1
         
-        pt.coord = [int(round(x)) for x in coord]
+        pt.coord = coord
         
-        # correspondences should look like [ [image1_idx, keypoint1_idx], [image2_idx, keypoint2_idx] ... ]
         # Store point index with each associated image
-        for img_idx, kp_idx in correspondences:
-            pt.addCorrespondence(img_idx, kp_idx)
-            # TODO: When association maps are added to SfmData, also update:
-            #   self.kp_to_point[(img_idx, kp_idx)] = pt.idx
-            #   self.point_observations.setdefault(pt.idx, []).append((img_idx, kp_idx))
+        pt.addCorrespondence(img_i_idx, img_i_kp_idx)
+        pt.addCorrespondence(img_j_idx, img_j_kp_idx)
+        
+        # App sfm track of 2d keypoints to 3d point
+        self.kp_to_point[(img_i_idx, img_i_kp_idx)] = pt.idx
+        self.kp_to_point[(img_j_idx, img_j_kp_idx)] = pt.idx
         
         self.pts[pt.idx] = pt
         return pt.idx
@@ -218,6 +216,9 @@ def sfmRun(datasetDir, viewer):
         
         pts_i = np.float32([img_i.kp[m.queryIdx].pt for m in matches])
         pts_j = np.float32([img_j.kp[m.trainIdx].pt for m in matches])
+        # Need to store indices so we don't lose them after filtering
+        idx_i = np.array([m.queryIdx for m in matches])
+        idx_j = np.array([m.trainIdx for m in matches])
         
         # Calculate essential matrix (needs to be done for every pair of images)
         E, mask_E = cv.findEssentialMat(pts_i, pts_j, sfm.K, method=cv.RANSAC, prob=0.999, threshold=1.0)
@@ -230,6 +231,8 @@ def sfmRun(datasetDir, viewer):
         mask_E = mask_E.ravel().astype(bool) # if you don't do this, opencv complains
         inliers_i = pts_i[mask_E]
         inliers_j = pts_j[mask_E]
+        idx_i = idx_i[mask_E]
+        idx_j = idx_j[mask_E]
         
         R, t, mask_P = estimatePose(inliers_i, inliers_j, E, sfm.K)
         # Need to chain new image j pose with image i pose
@@ -240,12 +243,27 @@ def sfmRun(datasetDir, viewer):
         mask_P = mask_P.ravel().astype(bool)
         inliers_i = inliers_i[mask_P]
         inliers_j = inliers_j[mask_P]
+        idx_i = idx_i[mask_P]
+        idx_j = idx_j[mask_P]
         print(f"Initial match count between image {img_i.idx} and image {img_j.idx}: {mask_E.size}")
         print(f"Final inliers count between image {img_i.idx} and image {img_j.idx}: {mask_P.sum()}")
-        
-        ptCloud = triangulate(inliers_i, inliers_j, img_i.R, img_i.t, img_j.R, img_j.t, sfm.K)
+        # We will probably want to use 1 or 2 decimal points, integer looked unusable
+        ptCloud = triangulate(inliers_i, inliers_j, img_i.R, img_i.t, img_j.R, img_j.t, sfm.K, decimal_pts=2)
+        # idx i/j, inliers i/j, and ptCloud all should have same number of entries, can loop through any of their sizes
+        for idx in range(idx_j.size):
+            # TODO: Need some kind of handling on what to do if we have a 3d point that already exists due to rounding
+            # Merge into one? Do suppression? Need to research
+            
+            # If the keypoint already mapped to a point, we do not need to create a new point
+            pt_idx = sfm.kp_to_point.get((img_i.idx, idx_i[idx]))
+            if pt_idx is not None:
+                pt = sfm.getPoint(pt_idx)
+                pt.addCorrespondence(img_j.idx, idx_j[idx])
+                sfm.kp_to_point[(img_j.idx, idx_j[idx])] = pt.idx
+            else:
+                sfm.addPoint(ptCloud[idx], img_i.idx, idx_i[idx], img_j.idx, idx_j[idx])
+
         # TODO: Filter triangulated points by cheirality (positive depth), parallax, and reprojection error.
-        # TODO: Persist valid 3D points in SfmData (addPoint) and maintain observation tracks.
         # TODO: Run initial bundle adjustment (2-view BA) to refine poses and 3D points.
     
         # Visualize (we can call this on each iteration)
@@ -265,6 +283,14 @@ def sfmRun(datasetDir, viewer):
         #   - Periodically run local/global bundle adjustment.
         #   - Update viewer after each step.
         # TODO: Save reconstruction to disk (e.g., PLY for points + JSON for camera poses).
+        
+    # For debug, I would reccommend just printing terminal output to a file if you use this
+    # for pt_id, pt in sfm.pts.items():
+    #     print(f"Point {pt_id}: 3D coords = {pt.coord}")
+    #     for img_idx, kp_idx in pt.correspondences:
+    #         print(f"  seen in image {img_idx}, keypoint {kp_idx}")
+    # for (img_idx, kp_idx), pt_id in sfm.kp_to_point.items():
+    #     print(f"Image {img_idx}, keypoint {kp_idx} -> Point {pt_id}, 3D = {sfm.pts[pt_id].coord}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

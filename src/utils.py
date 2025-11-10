@@ -9,12 +9,15 @@ def estimatePose(pts1, pts2, E, K):
   return R, t, mask
 
 
-def triangulate(pts1, pts2, R1, t1, R2, t2, K):
+def triangulate(pts1, pts2, R1, t1, R2, t2, K, decimal_pts):
   # Projection matrix = K * [R | t]
   P1 = (K @ np.hstack((R1, t1))).astype(np.float32) # 3x4
   P2 = (K @ np.hstack((R2, t2))).astype(np.float32) # 3x4
   pts_h = cv.triangulatePoints(P1, P2, pts1.T, pts2.T)
-  return (pts_h[:3] / pts_h[3]).T # homogeneous -> euclidean coords, (N, 3)
+  pts_3d = (pts_h[:3] / pts_h[3]).T # homogeneous -> euclidean coords, (N, 3)
+  
+  pts_3d = np.round(pts_3d, decimals=decimal_pts)
+  return pts_3d
 
 
 def createIntrinsicsMatrix(fx, fy, cx, cy, s=0):
