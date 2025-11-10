@@ -149,16 +149,16 @@ def sfmRun(datasetDir, viewer):
         - Incremental (not global SfM)
     """
     sfm = SfmData()
-    # sfm.setExtractor(FeatureExtractor("SIFT", nfeatures=5000, contrastThreshold=0.03))
-    # sfm.setMatcher(matcher = FeatureMatcher("FLANN"))
-    sfm.setExtractor(FeatureExtractor("SIFT", nfeatures=500))
-    sfm.setMatcher(matcher = FeatureMatcher("BF", norm=cv.NORM_L2, crossCheck=False))
+    sfm.setExtractor(FeatureExtractor("SIFT", nfeatures=5000, contrastThreshold=0.03))
+    sfm.setMatcher(matcher = FeatureMatcher("FLANN"))
+    # sfm.setExtractor(FeatureExtractor("SIFT", nfeatures=5000))
+    # sfm.setMatcher(matcher = FeatureMatcher("BF", norm=cv.NORM_L2, crossCheck=False))
 
     # Construct camera matrix
     # This block is how the github dataset constructs the camera matrix.
     # We can prob manipulate these variables for any other camera/dataset we have
-    im_width = 1936
-    im_height = 1296
+    im_width =  1296
+    im_height = 1936
     focal_length_35mm = 43.0  # from the EXIF data
     sfm.setCameraIntrinsics(focal_length_35mm, im_width, im_height)
 
@@ -194,50 +194,77 @@ def sfmRun(datasetDir, viewer):
         # print(f"Image 1: {len(kp1)} keypoints")
         # print(f"Image 2: {len(kp2)} keypoints")
     
-
+    # ==========================================================
+    # 3. Iterative triangulation and addition to point cloud
+    # ==========================================================    
     
-    # Iterative Section from here
-    
-    # Calculate essential matrix (needs to be done for every pair of images)
-    E, mask_E = cv.findEssentialMat(pts1, pts2, sfm.K, method=cv.RANSAC, prob=0.999, threshold=1.0)
-    # TODO: Check for degenerate/insufficient inliers and skip/choose another initial pair when needed.
-    # TODO: Consider normalizing points (undistorting and using normalized coordinates) before E estimation.
-
-    mask_E = mask_E.ravel().astype(bool) # if you don't do this, opencv complains
-    inliers1 = pts1[mask_E]
-    inliers2 = pts2[mask_E]
-
+    # Init stuff for first iteration of loop
     # The first iteration of SfM treats first camera as base projection so P = [I | 0] (R = np.eye(3), t = [0, 0, 0])
-    img1.R = np.eye(3)
-    img1.t = np.zeros((3, 1))
-    R, t, mask_P = estimatePose(inliers1, inliers2, E, sfm.K)
-    img2.setPose(R,t)
+    img_i = sfm.getImage(0)
+    img_i.setPose(np.eye(3), np.zeros((3, 1)))
+    img_i.triangulated = True
+    triangulatedCount = 1
+    viewer.addCameraPose(img_i.R, img_i.t, sfm.K)
+    
+    while triangulatedCount < sfm.imageCount:
+        # Placeholder for getting the next image, for now it is just getting whatever the image at next index is
+        img_j = sfm.getImage(img_i.idx+1)
+        
+        # Match with Lowe's ratio test
+        matches = sfm.matcher.knnMatch(img_i.des, img_j.des)
+        if len(matches) < 20:
+            print(f"Skipping triangulation on {img_i.idx} and {img_j.idx}, bad matches")
+            break
+        
+        pts_i = np.float32([img_i.kp[m.queryIdx].pt for m in matches])
+        pts_j = np.float32([img_j.kp[m.trainIdx].pt for m in matches])
+        
+        # Calculate essential matrix (needs to be done for every pair of images)
+        E, mask_E = cv.findEssentialMat(pts_i, pts_j, sfm.K, method=cv.RANSAC, prob=0.999, threshold=1.0)
+        # TODO: Check for degenerate/insufficient inliers and skip/choose another initial pair when needed.
+        # TODO: Consider normalizing points (undistorting and using normalized coordinates) before E estimation.
+        if mask_E is None or mask_E.sum()<10:
+            print(f"Skipping triangulation on {img_i.idx} and {img_j.idx}, bad E")
+            break
+        
+        mask_E = mask_E.ravel().astype(bool) # if you don't do this, opencv complains
+        inliers_i = pts_i[mask_E]
+        inliers_j = pts_j[mask_E]
+        
+        R, t, mask_P = estimatePose(inliers_i, inliers_j, E, sfm.K)
+        # Need to chain new image j pose with image i pose
+        R = img_i.R @ R
+        t = img_i.R @ t + img_i.t
+        img_j.setPose(R,t)
+        
+        mask_P = mask_P.ravel().astype(bool)
+        inliers_i = inliers_i[mask_P]
+        inliers_j = inliers_j[mask_P]
+        print(f"Initial match count between image {img_i.idx} and image {img_j.idx}: {mask_E.size}")
+        print(f"Final inliers count between image {img_i.idx} and image {img_j.idx}: {mask_P.sum()}")
+        
+        ptCloud = triangulate(inliers_i, inliers_j, img_i.R, img_i.t, img_j.R, img_j.t, sfm.K)
+        # TODO: Filter triangulated points by cheirality (positive depth), parallax, and reprojection error.
+        # TODO: Persist valid 3D points in SfmData (addPoint) and maintain observation tracks.
+        # TODO: Run initial bundle adjustment (2-view BA) to refine poses and 3D points.
+    
+        # Visualize (we can call this on each iteration)
+        viewer.addCameraPose(img_j.R, img_j.t, sfm.K)
+        viewer.addPoints(ptCloud)
+        
+        # Increment, img_j becomes img_i for the next iteration
+        img_j.triangulated = True
+        triangulatedCount += 1
 
-    mask_P = mask_P.ravel().astype(bool)
-    inliers1 = inliers1[mask_P]
-    inliers2 = inliers2[mask_P]
-    print("Initial match count: ", mask_E.size)
-    print("Final inliers count: ", mask_P.sum())
+        img_i = img_j
 
-    ptCloud = triangulate(inliers1, inliers2, img1.R, img1.t, img2.R, img2.t, sfm.K)
-    # TODO: Filter triangulated points by cheirality (positive depth), parallax, and reprojection error.
-    # TODO: Persist valid 3D points in SfmData (addPoint) and maintain observation tracks.
-    # TODO: Run initial bundle adjustment (2-view BA) to refine poses and 3D points.
-    img1.triangulated = True
-    img2.triangulated = True
-
-    # Visualize (we can call this on each iteration
-    viewer.addCameraPose(img1.R, img1.t, sfm.K)
-    viewer.addCameraPose(img2.R, img2.t, sfm.K)
-    viewer.addPoints(ptCloud)
-
-    # TODO: Implement incremental reconstruction loop:
-    #   - For each remaining image: find 2D-3D correspondences via feature matches + known tracks.
-    #   - Estimate new camera pose with solvePnPRansac (check MIN_REQUIRED_POINTS).
-    #   - Triangulate new points with existing calibrated views and add to the model.
-    #   - Periodically run local/global bundle adjustment.
-    #   - Update viewer after each step.
-    # TODO: Save reconstruction to disk (e.g., PLY for points + JSON for camera poses).
+        # TODO: Implement incremental reconstruction loop:
+        #   - For each remaining image: find 2D-3D correspondences via feature matches + known tracks.
+        #   - Estimate new camera pose with solvePnPRansac (check MIN_REQUIRED_POINTS).
+        #   - Triangulate new points with existing calibrated views and add to the model.
+        #   - Periodically run local/global bundle adjustment.
+        #   - Update viewer after each step.
+        # TODO: Save reconstruction to disk (e.g., PLY for points + JSON for camera poses).
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
