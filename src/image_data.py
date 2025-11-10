@@ -11,6 +11,8 @@ class ImageData:
         # Pose info
         self.R = None
         self.t = None
+        # Bool to store if we already used this image for triangulation
+        self.triangulated = False
 
     def setPose(self, R, t):
         self.R = R

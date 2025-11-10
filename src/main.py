@@ -83,7 +83,7 @@ class SfmData:
         pt.idx = self.pointCount
         self.pointCount += 1
         
-        pt.coord = coord
+        pt.coord = [int(round(x)) for x in coord]
         
         # correspondences should look like [ [image1_idx, keypoint1_idx], [image2_idx, keypoint2_idx] ... ]
         # Store point index with each associated image
@@ -223,6 +223,8 @@ def sfmRun(datasetDir, viewer):
     # TODO: Filter triangulated points by cheirality (positive depth), parallax, and reprojection error.
     # TODO: Persist valid 3D points in SfmData (addPoint) and maintain observation tracks.
     # TODO: Run initial bundle adjustment (2-view BA) to refine poses and 3D points.
+    img1.triangulated = True
+    img2.triangulated = True
 
     # Visualize (we can call this on each iteration
     viewer.addCameraPose(img1.R, img1.t, sfm.K)
