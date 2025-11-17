@@ -18,6 +18,7 @@ from feature_extractor import FeatureExtractor
 from feature_matcher import FeatureMatcher
 from image_data import ImageData
 from point_data import PointData
+from bundle_adjustment import runBundleAdjustment
 from utils import estimatePose, triangulate, createIntrinsicsMatrix, load_all_images
 
 class SfmData:
@@ -73,7 +74,22 @@ class SfmData:
     
     def getImage(self, img_index):
         return self.images.get(img_index, None)
-    
+
+    def getPointCloud(self):
+        pts = []
+        colors = []
+        for pt in self.pts.values():
+            if pt.coord is None:
+                continue
+            pts.append(pt.coord)
+
+            if pt.color is None:
+                colors.append([0.6, 0.8, 1.0])  # fallback color
+            else:
+                colors.append(pt.color)
+
+        return (np.array(pts, np.float32), np.array(colors, np.float32))
+
     # add point, will add 3d point and relevant correspondences
     def addPoint(self, coord, img_i_idx, img_i_kp_idx, img_j_idx, img_j_kp_idx):
         pt = PointData()
@@ -84,8 +100,8 @@ class SfmData:
         pt.coord = coord
         
         # Store point index with each associated image
-        pt.addCorrespondence(img_i_idx, img_i_kp_idx)
-        pt.addCorrespondence(img_j_idx, img_j_kp_idx)
+        pt.addCorrespondence(img_i_idx, img_i_kp_idx, sfm=self)
+        pt.addCorrespondence(img_j_idx, img_j_kp_idx, sfm=self)
         
         # App sfm track of 2d keypoints to 3d point
         self.kp_to_point[(img_i_idx, img_i_kp_idx)] = pt.idx
@@ -139,6 +155,27 @@ class SfmData:
 
         return pts1, pts2, matches, kp1, kp2
 
+def voxelDownsampleFilter(sfm, voxel_size=0.1):
+    """ Splits up world space into voxels of voxel_size. All points mapping to same voxel get grouped """
+    pts = []
+    for pt in sfm.pts.values():
+        if pt.coord is not None:
+            pts.append((pt.idx, pt.coord))
+
+    voxels = {}
+    for idx, coord in pts:
+        key = tuple((coord / voxel_size).astype(int))
+        if key not in voxels:
+            voxels[key] = idx  # keep one point per voxel (for less cluttered view)
+
+    keep_indices = set(voxels.values())
+    for idx in list(sfm.pts.keys()):
+        if idx not in keep_indices:
+            del sfm.pts[idx]
+
+    sfm.kp_to_point = {
+        k: v for (k, v) in sfm.kp_to_point.items() if v in sfm.pts
+    }
 
 def sfmRun(datasetDir, viewer):
     """
@@ -202,8 +239,13 @@ def sfmRun(datasetDir, viewer):
     img_i.setPose(np.eye(3), np.zeros((3, 1)))
     img_i.triangulated = True
     triangulatedCount = 1
-    viewer.addCameraPose(img_i.R, img_i.t, sfm.K)
-    
+    viewer.updateCameraPoses([{
+                "R": img_i.R,
+                "t": img_i.t,
+                "K": sfm.K,
+                "name": f"Camera 0",
+                "color": "orange"}])
+
     while triangulatedCount < sfm.imageCount:
         # Placeholder for getting the next image, for now it is just getting whatever the image at next index is
         img_j = sfm.getImage(img_i.idx+1)
@@ -253,23 +295,45 @@ def sfmRun(datasetDir, viewer):
         for idx in range(idx_j.size):
             # TODO: Need some kind of handling on what to do if we have a 3d point that already exists due to rounding
             # Merge into one? Do suppression? Need to research
-            
-            # If the keypoint already mapped to a point, we do not need to create a new point
+
+            # try merging
             pt_idx = sfm.kp_to_point.get((img_i.idx, idx_i[idx]))
+            if pt_idx is None:
+                pt_idx = sfm.kp_to_point.get((img_j.idx, idx_j[idx]))
+
             if pt_idx is not None:
                 pt = sfm.getPoint(pt_idx)
-                pt.addCorrespondence(img_j.idx, idx_j[idx])
+                pt.addCorrespondence(img_i.idx, idx_i[idx], sfm)
+                pt.addCorrespondence(img_j.idx, idx_j[idx], sfm)
+                sfm.kp_to_point[(img_i.idx, idx_i[idx])] = pt.idx
                 sfm.kp_to_point[(img_j.idx, idx_j[idx])] = pt.idx
             else:
                 sfm.addPoint(ptCloud[idx], img_i.idx, idx_i[idx], img_j.idx, idx_j[idx])
 
+
+
         # TODO: Filter triangulated points by cheirality (positive depth), parallax, and reprojection error.
-        # TODO: Run initial bundle adjustment (2-view BA) to refine poses and 3D points.
-    
-        # Visualize (we can call this on each iteration)
-        viewer.addCameraPose(img_j.R, img_j.t, sfm.K)
-        viewer.addPoints(ptCloud)
-        
+        runBundleAdjustment(sfm, min_points=20, verbose=1) # can pick verbose=2 here if want to print progress
+
+        voxelDownsampleFilter(sfm)
+
+        # Build full camera list from SfmData
+        cams = []
+        for img_idx, img in sfm.images.items():
+            if img.R is None or img.t is None:
+                continue
+            cams.append({
+                "R": img.R,
+                "t": img.t,
+                "K": sfm.K,
+                "name": f"Camera {img_idx}",
+                "color": "orange"
+            })
+
+        pts_xyz, colors = sfm.getPointCloud()
+        viewer.updatePoints(pts_xyz, colors)
+        viewer.updateCameraPoses(cams)
+
         # Increment, img_j becomes img_i for the next iteration
         img_j.triangulated = True
         triangulatedCount += 1
