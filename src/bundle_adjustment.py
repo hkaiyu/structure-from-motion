@@ -128,7 +128,7 @@ def baBuildProblem(sfm):
 
     return camera_params, points_3d, camera_indices, point_indices, points_2d, imgidx_to_camidx, ptid_to_local
 
-def runBundleAdjustment(sfm, min_points=10, verbose=2):
+def runBundleAdjustment(sfm, min_points=20, verbose=1):
     """
     Run global bundle adjustment on the current SfM state.
     Updates camera poses and 3D points in-place in `sfm`.
@@ -148,14 +148,36 @@ def runBundleAdjustment(sfm, min_points=10, verbose=2):
     n_cameras = camera_params.shape[0]
     n_points = points_3d.shape[0]
 
-    if camera_indices.size == 0:
+    if n_cameras < 2 or camera_indices.size == 0:
         return
 
-    x0 = np.hstack([camera_params.ravel(), points_3d.ravel()])
+    # keep camera 0 fixed to its initial pose -> hopefully this fixes discrepancy between mac and windows
+    ref_cam_idx = 0
+    ref_cam_params = camera_params[ref_cam_idx].copy()
+
+    x0 = np.hstack([camera_params.ravel(), points_3d.ravel()]).astype(np.float64)
     A = baSparsity(n_cameras, n_points, camera_indices, point_indices)
 
+    # this function is basically to try and fix problems between discrepancies between mac and windows
+    # without this, on mac, we would get very different bundle adjustment result. Here, we are trying locking the
+    # reference camera (camera 0) to be such that it is not allowed to translate or rotate around z due to BA
+    def baResidualsFixRefCamera(params, n_cameras, n_points, camera_indices, point_indices, points_2d, K):
+        # Rebuild camera params and points
+        camera_params = params[:n_cameras * 6].reshape((n_cameras, 6))
+        points_3d_flat = params[n_cameras * 6:].reshape((n_points, 3))
+
+        # Overwrite first camera with the fixed reference pose
+        camera_params[0, 3:] = ref_cam_params[3:] # fix translation
+        camera_params[0, 2] = ref_cam_params[2]   # fix rotation around z
+
+        # Use the same logic as baResiduals but with the modified camera_params
+        cam_obs = camera_params[camera_indices]
+        pts_obs = points_3d_flat[point_indices]
+        pts_proj = project(pts_obs, cam_obs, K)
+        return (pts_proj - points_2d).ravel()
+
     res = least_squares(
-        baResiduals,
+        baResidualsFixRefCamera,
         x0,
         jac_sparsity=A,
         verbose=verbose,
@@ -169,18 +191,21 @@ def runBundleAdjustment(sfm, min_points=10, verbose=2):
     cam_opt = x_opt[:n_cameras * 6].reshape((n_cameras, 6))
     pts_opt = x_opt[n_cameras * 6:].reshape((n_points, 3))
 
-    # set camera poses
+    # Enforce that first camera stays exactly the reference pose in the result too
+    cam_opt[ref_cam_idx, :] = ref_cam_params
+
+    # set camera poses back to sfm
     for img_idx, cam_idx in imgidx_to_camidx.items():
         rvec = cam_opt[cam_idx, :3].reshape(3, 1)
         tvec = cam_opt[cam_idx, 3:].reshape(3, 1)
         R_opt, _ = cv.Rodrigues(rvec)
 
         img = sfm.images[img_idx]
-        img.setPose(R_opt, tvec)
+        img.setPose(R_opt.astype(np.float64), tvec.astype(np.float64))
 
     # set 3d points
     for pid, local_idx in ptid_to_local.items():
-        sfm.pts[pid].coord = pts_opt[local_idx]
+        sfm.pts[pid].coord = pts_opt[local_idx].astype(np.float64)
 
     print(f"Bundle adjustment optimized {n_cameras} cameras, {n_points} points, "
           f"{camera_indices.size} observations. Final cost: {res.cost:.3f}")
