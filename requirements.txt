@@ -1,5 +1,4 @@
 opencv-contrib-python
 numpy
 vispy
-scipy
 PyQt5
