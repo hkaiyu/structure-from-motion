@@ -11,7 +11,7 @@ import numpy as np
 import cv2 as cv
 from itertools import combinations
 from pathlib import Path
-import argparse
+import dataset_loader
 
 from point_cloud_viewer import PointCloudViewer
 from feature_extractor import FeatureExtractor
@@ -39,9 +39,8 @@ class SfmData:
         self.kp_to_point = {}  # (img_idx, kp_idx) -> point_id
         # point observations stored in pt, pt.correspondences
 
-    def setCameraIntrinsics(self, focal_length_35mm, im_width, im_height):
-        focal_length = max(im_width, im_height) * focal_length_35mm / 35.0
-        self.K = np.array([[focal_length, 0, im_width / 2], [0, focal_length, im_height / 2], [0, 0, 1]])
+    def setCameraIntrinsics(self, K):
+        self.K = K
 
     # Add image from a path or preloaded ndarray, with optional precomputed features
     # If keypoints/descriptors are provided, they are used directly to avoid recomputation
@@ -177,7 +176,7 @@ def voxelDownsampleFilter(sfm, voxel_size=0.1):
         k: v for (k, v) in sfm.kp_to_point.items() if v in sfm.pts
     }
 
-def sfmRun(datasetDir, viewer):
+def sfmRun(dataset, viewer):
     """
     Assumptions:
         - Calibrated SfM (no fundamental matrix needed, directly calculate essential matrix with intrinsics)
@@ -192,15 +191,14 @@ def sfmRun(datasetDir, viewer):
     # Construct camera matrix
     # This block is how the github dataset constructs the camera matrix.
     # We can prob manipulate these variables for any other camera/dataset we have
-    im_width =  1296
-    im_height = 1936
-    focal_length_35mm = 43.0  # from the EXIF data
-    sfm.setCameraIntrinsics(focal_length_35mm, im_width, im_height)
+    im_width =  dataset.im_width
+    im_height = dataset.im_height
+    sfm.setCameraIntrinsics(dataset.K)
 
     # ==========================================================
     # 1. Load images and extract features
     # ==========================================================
-    images = load_all_images(datasetDir)
+    images = load_all_images(dataset.dataset_dir)
     features = {}
     img_indices = []
     for img_id, img in enumerate(images):
@@ -357,15 +355,17 @@ def sfmRun(datasetDir, viewer):
     #     print(f"Image {img_idx}, keypoint {kp_idx} -> Point {pt_id}, 3D = {sfm.pts[pt_id].coord}")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--dataset", type=str, default=None, help="Path to dataset directory (defaults to project_root/dataset)")
-    args = parser.parse_args()
-
     project_root = Path(__file__).resolve().parent.parent
-    dataset_path = Path(args.dataset).resolve() if args.dataset else project_root / "dataset"
-    if not dataset_path.is_dir():
-        raise FileNotFoundError(f"Dataset directory not found: {dataset_path}")
+    dataset_dir = Path(project_root / "dataset")
+    dataset = dataset_loader.select_dataset(dataset_dir)
+    print(f"Using dataset at: {dataset.dataset_dir}")
+    print(f"Image Width: {dataset.im_height}")
+    print(f"Image Height: {dataset.im_width}")
+    print(f"Focal Length: {dataset.focal_length}\n")
+    
+    if not dataset:
+        raise FileNotFoundError(f"Error loading the selected dataset")
 
     viewer = PointCloudViewer("SfM Point Cloud")
-    threading.Thread(target=sfmRun, args=(str(dataset_path), viewer), daemon=True).start()
+    threading.Thread(target=sfmRun, args=(dataset, viewer), daemon=True).start()
     viewer.run()
