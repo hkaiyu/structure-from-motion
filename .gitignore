@@ -3,6 +3,16 @@ __pycache__
 *.pyc
 *.pyd
 *.pyo
+
+# env
 .venv/
 venv/
+
+# large eth3d datasets (which will be downloaded with script)
+data/
+
+# ide stuff
+.vscode
+
+# docs
 docs/
