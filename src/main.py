@@ -287,8 +287,10 @@ def sfmRun(dataset, viewer):
         idx_j = idx_j[mask_P]
         print(f"Initial match count between image {img_i.idx} and image {img_j.idx}: {mask_E.size}")
         print(f"Final inliers count between image {img_i.idx} and image {img_j.idx}: {mask_P.sum()}")
+
         # We will probably want to use 1 or 2 decimal points, integer looked unusable
         ptCloud = triangulate(inliers_i, inliers_j, img_i.R, img_i.t, img_j.R, img_j.t, sfm.K, decimal_pts=2)
+
         # idx i/j, inliers i/j, and ptCloud all should have same number of entries, can loop through any of their sizes
         for idx in range(idx_j.size):
             # TODO: Need some kind of handling on what to do if we have a 3d point that already exists due to rounding

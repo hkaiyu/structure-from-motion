@@ -158,26 +158,8 @@ def runBundleAdjustment(sfm, min_points=20, verbose=1):
     x0 = np.hstack([camera_params.ravel(), points_3d.ravel()]).astype(np.float64)
     A = baSparsity(n_cameras, n_points, camera_indices, point_indices)
 
-    # this function is basically to try and fix problems between discrepancies between mac and windows
-    # without this, on mac, we would get very different bundle adjustment result. Here, we are trying locking the
-    # reference camera (camera 0) to be such that it is not allowed to translate or rotate around z due to BA
-    def baResidualsFixRefCamera(params, n_cameras, n_points, camera_indices, point_indices, points_2d, K):
-        # Rebuild camera params and points
-        camera_params = params[:n_cameras * 6].reshape((n_cameras, 6))
-        points_3d_flat = params[n_cameras * 6:].reshape((n_points, 3))
-
-        # Overwrite first camera with the fixed reference pose
-        camera_params[0, 3:] = ref_cam_params[3:] # fix translation
-        camera_params[0, 2] = ref_cam_params[2]   # fix rotation around z
-
-        # Use the same logic as baResiduals but with the modified camera_params
-        cam_obs = camera_params[camera_indices]
-        pts_obs = points_3d_flat[point_indices]
-        pts_proj = project(pts_obs, cam_obs, K)
-        return (pts_proj - points_2d).ravel()
-
     res = least_squares(
-        baResidualsFixRefCamera,
+        baResiduals,
         x0,
         jac_sparsity=A,
         verbose=verbose,

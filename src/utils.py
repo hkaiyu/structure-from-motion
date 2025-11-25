@@ -15,20 +15,18 @@ def triangulate(pts1, pts2, R1, t1, R2, t2, K, decimal_pts):
   P2 = (K @ np.hstack((R2, t2))).astype(np.float32) # 3x4
   pts_h = cv.triangulatePoints(P1, P2, pts1.T, pts2.T)
   pts_3d = (pts_h[:3] / pts_h[3]).T # homogeneous -> euclidean coords, (N, 3)
-  
   pts_3d = np.round(pts_3d, decimals=decimal_pts)
   return pts_3d
 
 
-def createIntrinsicsMatrix(fx, fy, cx, cy, s=0):
+def createIntrinsicsMatrix(fx, fy, cx, cy):
     """
     Creates intrinsics matrix (K) such that:
         - fx = horizontal focal length
         - fy = vertical focal length
         - (cx, cy) = principal point
-        - s = skew factor
     """
-    return np.array([[fx, s, cx], [0, fy, cy], [0, 0, 1]], dtype=np.float32)
+    return np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]], dtype=np.float32)
 
 
 def load_all_images(dataset_path):
