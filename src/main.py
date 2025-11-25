@@ -138,7 +138,7 @@ class SfmData:
         key = (min(i, j), max(i, j))
 
         # Search for corresponding pairs of points
-        matches = self.matcher.match(des1, des2)
+        matches = self.matcher.knnMatch(des1, des2, ratioVal=0.85)
         self.pairMatches[key] = matches
 
         # Sort them based on distance (dissimilarity) between two descriptors
@@ -183,10 +183,10 @@ def sfmRun(dataset, viewer):
         - Incremental (not global SfM)
     """
     sfm = SfmData()
-    sfm.setExtractor(FeatureExtractor("SIFT", nfeatures=5000, contrastThreshold=0.03))
-    sfm.setMatcher(matcher = FeatureMatcher("FLANN"))
+    sfm.setExtractor(FeatureExtractor("SIFT", nfeatures=10000, contrastThreshold=0.03))
+    # sfm.setMatcher(matcher = FeatureMatcher("FLANN"))
     # sfm.setExtractor(FeatureExtractor("SIFT", nfeatures=5000))
-    # sfm.setMatcher(matcher = FeatureMatcher("BF", norm=cv.NORM_L2, crossCheck=False))
+    sfm.setMatcher(matcher = FeatureMatcher("BF", norm=cv.NORM_L2, crossCheck=False))
 
     # Construct camera matrix
     # This block is how the github dataset constructs the camera matrix.

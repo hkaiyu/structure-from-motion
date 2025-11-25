@@ -21,14 +21,14 @@ class FeatureMatcher:
         """Returns a list of matches sorted by distance."""
         matches = self.matcher.match(des1, des2)
         return sorted(matches, key=lambda x: x.distance)
-  def knnMatch(self, des1, des2, ratio = True):
+  def knnMatch(self, des1, des2, ratio = True, ratioVal = 0.75):
     """Perform KNN matching and apply ratio test based on input"""
     raw_matches = self.matcher.knnMatch(des1, des2, k=2)
       
     if ratio:
         good = []
         for m, n in raw_matches:
-            if m.distance<0.75 * n.distance:
+            if m.distance<ratioVal * n.distance:
                 good.append(m)
         return good
     else:
