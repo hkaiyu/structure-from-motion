@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en"><head>  
+  <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+  <meta charset="utf-8">
+  <title>Computer Vision Course Project
+  | ECE, Virginia Tech | Fall 2021: ECE 4554/5554</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="">
+  <meta name="author" content="">
+
+<!-- Le styles -->  
+  <link href="css/bootstrap.css" rel="stylesheet">
+<style>
+body {
+padding-top: 60px; /* 60px to make the container go all the way to the bottom of the topbar */
+}
+.vis {
+color: #3366CC;
+}
+.data {
+color: #FF9900;
+}
+</style>
+  
+<link href="css/bootstrap-responsive.min.css" rel="stylesheet">
+
+<!-- HTML5 shim, for IE6-8 support of HTML5 elements --><!--[if lt IE 9]>
+<script src="http://html5shim.googlecode.com/svn/trunk/html5.js"></script>
+<![endif]-->
+</head>
+
+<body>
+<div class="container">
+<div class="page-header">
+
+<!-- Title and Name --> 
+<h1>Structure from Motion Project Proposal</h1> 
+<span style="font-size: 20px; line-height: 1.5em;"><strong>Kaiyu Hernandez, Jordan Daugherty, & Sanil Hira</strong></span><br>
+<span style="font-size: 18px; line-height: 1.5em;">Fall 2025 ECE 4554/5554 Computer Vision: Course Project</span><br>
+<span style="font-size: 18px; line-height: 1.5em;">Virginia Tech</span>
+<hr>
+
+<img src="sfm2.png">
+
+<!-- Problem Statement -->
+<h3>Problem Statement</h3>
+
+The goal of our project is to explore structure from motion. We will attempt to reconstruct a 3D sparse point cloud of a scene given 2D images taking from multiple perspectives. This will include:
+<ul>
+  <li>Testing performance/accuracy of our algorithm with different types of datasets</li>
+  <li>Figuring out parameterizations in our algorithms to optimize accuracy in the end result while maintaining a reasonable runtime</li>
+</ul>
+<br>
+<img src="sfm.jpg">
+<!-- Approach -->
+<h3>Approach</h3>
+We will employ use of the OpenCV and NumPy Python libraries to implement our approach. Structure from motion can be done incrementally, building upon the point cloud after processing each image, or globally, which processes all the images before creating the point cloud - we will follow the incremental approach initially. Our main image pipeline will follow:
+<ul>
+  <li>Feature Extraction</li>
+  <li>Feature Matching</li>
+  <li>Camera Pose Estimation & Triangulation</li>
+  <li>Bundle Adjustment</li>
+</ul>
+<br>
+<!-- Experimentation -->
+<h3>Plans for Experimentation</h3>
+We intend to test on a variety of datasets, ranging from small objects to larger scale scenes. We will start with data from the dataset <a href="https://github.com/sunbuny/3D-Recon_3D-DL_Datasets">found here.</a>
+For a more quantitative approach for measuring the accuracy of our structure from motion algorithm, we plan to model our own basic 3D scenes, and apply our algorithm on a series of digital photographs taken from multiple perspectives in the scene. Analysis here will include comparing our reconstructed 3D point cloud to the objective 3D model of the scene.
+We also intend to test on our own data, taking our own images of a scene from multiple angles and seeing how our real-world images perform compared to the dataset and digital models.<br><br>
+
+To further optimize our results, we plan to employ techniques such as adjusting kernels for feature extraction, and descriptor matching algorithms.
+To verify the performance of our algorithm, we will test against standard techniques used in modern structure from motion literature.<br><br>
+
+Other than functions available in OpenCV and NumPy, we plan to write our code from scratch. Success for our project would be accurate 3D sparse point cloud reconstructions of our sample images. Depending on how quickly we can implement this, we may explore more advanced topics in the field such as dense point cloud representations, or exploring global structure from motion.<br><br>
+
+As for uncertainty, we generally can expect that increasing the number of input images we feed to our pipeline would increase the point cloud density, but are unsure if there is a limit to this where potentially adding more images would lead to additional noise and inaccuracies.
+We also expect to have to make some decisions to optimize for either speed or accuracy of the algorithms, but are uncertain of the details until we start implementation. Some speed gains may be worth if it has a fairly low impact in the point cloud representation of the scene, however we do not yet know where in the pipeline we can make these tradeoffs yet. Further analysis into optimization may be required depending on the runtime of our implementation, as it is possible our first draft may not run in a reasonable amount of runtime.
+
+
+<br><br>
+<!-- References -->
+<h3>References</h3>
+<ul>
+  <li><a href="https://github.com/sunbuny/3D-Recon_3D-DL_Datasets">https://github.com/sunbuny/3D-Recon_3D-DL_Datasets</a></li>
+  <li><a href="https://www.researchgate.net/figure/Structure-from-Motion-SfM-photogrammetric-principle-Source-Theia-sfmorg-2016_fig3_303824023">https://www.researchgate.net/figure/Structure-from-Motion-SfM-photogrammetric-principle-Source-Theia-sfmorg-2016_fig3_303824023</a></li>
+  <li><a href="https://www.mdpi.com/2313-433X/4/8/98">https://www.mdpi.com/2313-433X/4/8/98</a></li>
+</ul>
+<br><br>
+
+
+  <hr>
+  <footer> 
+  <p>© Kaiyu Hernandez, Jordan Daugherty, & Sanil Hira</p>
+  </footer>
+</div>
+</div>
+
+<br><br>
+
+</body></html>
