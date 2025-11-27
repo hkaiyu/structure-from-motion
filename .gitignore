@@ -8,11 +8,8 @@ __pycache__
 .venv/
 venv/
 
-# exclude huge number of datasets we have on local computer
+# exclude eth3d (too big for github)
 dataset/eth3d/
-
-# include specific datasets
-!dataset/eth3d/courtyard/
 
 # ide stuff
 .vscode
