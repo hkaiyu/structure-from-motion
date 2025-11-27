@@ -9,11 +9,10 @@ __pycache__
 venv/
 
 # exclude huge number of datasets we have on local computer
-dataset/
+dataset/eth3d/
 
 # include specific datasets
 !dataset/eth3d/courtyard/
-!dataset/erik_?/
 
 # ide stuff
 .vscode

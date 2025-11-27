@@ -2,6 +2,7 @@ import numpy as np
 import cv2 as cv
 from scipy.optimize import least_squares
 from scipy.sparse import lil_matrix
+from utils import profile
 
 # Code from https://scipy-cookbook.readthedocs.io/items/bundle_adjustment.html
 def rotate(points, rot_vecs):
@@ -75,7 +76,7 @@ def baBuildProblem(sfm):
     # map image index -> camera index [0..n_cameras-1]
     cam_img_indices = []
     for img_idx, img in sfm.images.items():
-        if getattr(img, "R", None) is not None and getattr(img, "t", None) is not None:
+        if img.R is not None and img.t is not None:
             cam_img_indices.append(img_idx)
 
     cam_img_indices = sorted(cam_img_indices)
@@ -95,10 +96,24 @@ def baBuildProblem(sfm):
         camera_params[cam_idx, :3] = rvec.reshape(3)
         camera_params[cam_idx, 3:] = t
 
-    # map point idx -> local index [0..n_points-1]
-    pt_ids = sorted(sfm.pts.keys())
-    ptid_to_local = {pid: i for i, pid in enumerate(pt_ids)}
-    n_points = len(pt_ids)
+    valid_pt_ids = []
+    for pid, pt in sfm.pts.items():
+        if pt.coord is None:
+            continue
+        # count how many observations come from cameras that have poses
+        visible_cams = 0
+        for (img_idx, kp_idx) in pt.correspondences:
+            if img_idx in imgidx_to_camidx:
+                visible_cams += 1
+            if visible_cams >= 2:
+                break
+        if visible_cams >= 2:
+            valid_pt_ids.append(pid)
+
+    valid_pt_ids = sorted(valid_pt_ids)
+    ptid_to_local = {pid: i for i, pid in enumerate(valid_pt_ids)}
+    n_points = len(valid_pt_ids)
+
     points_3d = np.zeros((n_points, 3), dtype=np.float64)
     for pid, local_idx in ptid_to_local.items():
         points_3d[local_idx, :] = sfm.pts[pid].coord
@@ -128,6 +143,7 @@ def baBuildProblem(sfm):
 
     return camera_params, points_3d, camera_indices, point_indices, points_2d, imgidx_to_camidx, ptid_to_local
 
+@profile
 def runBundleAdjustment(sfm, min_points=20, verbose=1):
     """
     Run global bundle adjustment on the current SfM state.
@@ -151,10 +167,6 @@ def runBundleAdjustment(sfm, min_points=20, verbose=1):
     if n_cameras < 2 or camera_indices.size == 0:
         return
 
-    # keep camera 0 fixed to its initial pose -> hopefully this fixes discrepancy between mac and windows
-    ref_cam_idx = 0
-    ref_cam_params = camera_params[ref_cam_idx].copy()
-
     x0 = np.hstack([camera_params.ravel(), points_3d.ravel()]).astype(np.float64)
     A = baSparsity(n_cameras, n_points, camera_indices, point_indices)
 
@@ -173,9 +185,6 @@ def runBundleAdjustment(sfm, min_points=20, verbose=1):
     cam_opt = x_opt[:n_cameras * 6].reshape((n_cameras, 6))
     pts_opt = x_opt[n_cameras * 6:].reshape((n_points, 3))
 
-    # Enforce that first camera stays exactly the reference pose in the result too
-    cam_opt[ref_cam_idx, :] = ref_cam_params
-
     # set camera poses back to sfm
     for img_idx, cam_idx in imgidx_to_camidx.items():
         rvec = cam_opt[cam_idx, :3].reshape(3, 1)
@@ -189,5 +198,5 @@ def runBundleAdjustment(sfm, min_points=20, verbose=1):
     for pid, local_idx in ptid_to_local.items():
         sfm.pts[pid].coord = pts_opt[local_idx].astype(np.float64)
 
-    print(f"Bundle adjustment optimized {n_cameras} cameras, {n_points} points, "
+    print(f"[INFO] Bundle adjustment optimized {n_cameras} cameras, {n_points} points, "
           f"{camera_indices.size} observations. Final cost: {res.cost:.3f}")

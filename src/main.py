@@ -11,15 +11,17 @@ import numpy as np
 import cv2 as cv
 from itertools import combinations
 from pathlib import Path
-import dataset_loader
 
+import dataset_loader
+from eth3d_loader import load_scene_eth3d
+from eth3d_eval import evaluatePointCloud
 from point_cloud_viewer import PointCloudViewer
 from feature_extractor import FeatureExtractor
 from feature_matcher import FeatureMatcher
 from image_data import ImageData
 from point_data import PointData
 from bundle_adjustment import runBundleAdjustment
-from utils import estimatePose, triangulate, createIntrinsicsMatrix, load_all_images
+from utils import estimatePose, triangulate, loadAllImages, reprojectionError, pointDepth, parallaxAngle, profile
 
 class SfmData:
     def __init__(self):
@@ -89,6 +91,20 @@ class SfmData:
 
         return (np.array(pts, np.float32), np.array(colors, np.float32))
 
+    def getCameraData(self):
+        cams = []
+        for img_idx, img in self.images.items():
+            if img.R is None or img.t is None:
+                continue
+            cams.append({
+                "R": img.R,
+                "t": img.t,
+                "K": self.K,
+                "name": f"Camera {img_idx}",
+                "color": "orange"
+            })
+        return cams
+
     # add point, will add 3d point and relevant correspondences
     def addPoint(self, coord, img_i_idx, img_i_kp_idx, img_j_idx, img_j_kp_idx):
         pt = PointData()
@@ -118,13 +134,7 @@ class SfmData:
     def setMatcher(self, matcher):
         self.matcher = matcher
 
-    def genSIFTMatchPairs(self, img1, img2, numberOfMatches=None, use_cache=True):
-        """Generate matched 2D point pairs for two images using cached or freshly
-        computed descriptor matches. Returns (pts1, pts2, matches, kp1, kp2).
-
-        - numberOfMatches: if set, returns only the top-N matches by distance
-        - use_cache: if True, use self.pairMatches when available
-        """
+    def genSIFTMatchPairs(self, img1, img2):
         if img1 is None or img2 is None:
             raise ValueError("img1 and img2 must be valid ImageData instances")
 
@@ -138,216 +148,883 @@ class SfmData:
         key = (min(i, j), max(i, j))
 
         # Search for corresponding pairs of points
-        matches = self.matcher.knnMatch(des1, des2, ratioVal=0.85)
-        self.pairMatches[key] = matches
+        matches_12 = self.matcher.knnMatch(des1, des2, ratioVal=0.75)
+        matches_21 = self.matcher.knnMatch(des2, des1, ratioVal=0.75)
 
-        # Sort them based on distance (dissimilarity) between two descriptors
-        matches = sorted(matches, key=lambda m: m.distance)
+        # Symmetric consistency check
+        mutual = []
+        for m in matches_12:
+            for m2 in matches_21:
+                if m.queryIdx == m2.trainIdx and m.trainIdx == m2.queryIdx:
+                    mutual.append(m)
+                    break
 
-        # Optionally truncate to top-N matches
-        if numberOfMatches is not None:
-            matches = matches[:numberOfMatches]
+        if len(mutual) < 8:
+            return np.empty((0,2)), np.empty((0,2)), [], kp1, kp2
 
-        # Build point arrays
-        pts1 = np.float32([kp1[m.queryIdx].pt for m in matches])
-        pts2 = np.float32([kp2[m.trainIdx].pt for m in matches])
+        matches = sorted(mutual, key=lambda m: m.distance)
+
+        # Here we are just trying to constrain tnat i<j
+        kp_pairs = []
+        if i < j:
+            kp_pairs = [(m.queryIdx, m.trainIdx) for m in matches]
+        else:
+            kp_pairs = [(m.trainIdx, m.queryIdx) for m in matches]
+
+        self.pairMatches[key] = {
+            "matches": matches,
+            "kp_pairs": kp_pairs
+        }
+        pts1 = np.float32([kp1[pair[0]].pt for pair in kp_pairs])
+        pts2 = np.float32([kp2[pair[1]].pt for pair in kp_pairs])
 
         return pts1, pts2, matches, kp1, kp2
 
-def voxelDownsampleFilter(sfm, voxel_size=0.1):
-    """ Splits up world space into voxels of voxel_size. All points mapping to same voxel get grouped """
-    pts = []
-    for pt in sfm.pts.values():
-        if pt.coord is not None:
-            pts.append((pt.idx, pt.coord))
+# @profile
+def buildCorrespondences(sfm, new_img_idx, min_track_len=2):
+    """
+    Build 2D-3D correspondences for a new image using existing 3D points.
+      - look at matches between image k and new image
+      - if the keypoint in image k is already associated with a 3D point, we use that point as the 3D coordinate and
+        the matched keypoint in the new image as the 2D observation.
 
-    voxels = {}
-    for idx, coord in pts:
-        key = tuple((coord / voxel_size).astype(int))
-        if key not in voxels:
-            voxels[key] = idx  # keep one point per voxel (for less cluttered view)
+    Returns:
+        obj_points: (N, 3) float32
+        img_points: (N, 2) float32
+    """
+    new_img = sfm.getImage(new_img_idx)
+    obj_points = []
+    img_points = []
+    used_new_kps = set()
 
-    keep_indices = set(voxels.values())
-    for idx in list(sfm.pts.keys()):
-        if idx not in keep_indices:
-            del sfm.pts[idx]
+    for k, img_k in sfm.images.items():
+        if k == new_img_idx or not img_k.triangulated:
+            continue
+        key = (min(k, new_img_idx), max(k, new_img_idx))
+        pm = sfm.pairMatches.get(key)
+        if not pm:
+            continue
 
-    sfm.kp_to_point = {
-        k: v for (k, v) in sfm.kp_to_point.items() if v in sfm.pts
-    }
+        kp_pairs = pm["kp_pairs"]
+        matches = pm["matches"]
 
-def sfmRun(dataset, viewer):
+        good = [i for i,m in enumerate(matches) if m.distance < 55]
+        if not good:
+            continue
+
+        for gi in good:
+            kp_i, kp_j = kp_pairs[gi]
+            kp_idx_tri = kp_i if k < new_img_idx else kp_j
+            kp_idx_new = kp_j if k < new_img_idx else kp_i
+
+            if kp_idx_new in used_new_kps:
+                continue
+            used_new_kps.add(kp_idx_new)
+
+            pt_id = sfm.kp_to_point.get((k, kp_idx_tri))
+            if pt_id is None:
+                continue
+
+            pt = sfm.getPoint(pt_id)
+            obj_points.append(pt.coord)
+            img_points.append(new_img.kp[kp_idx_new].pt)
+
+    if len(obj_points) == 0:
+        return np.empty((0, 3), np.float32), np.empty((0, 2), np.float32)
+
+    return np.asarray(obj_points, np.float32), np.asarray(img_points, np.float32)
+
+def chooseNextImage(sfm, current_idx, img_indices, failed_images):
+    best_j = None
+    best_inliers = 0
+    img_i = sfm.getImage(current_idx)
+
+    for j in img_indices:
+        if j == current_idx:
+            continue
+
+        img_j = sfm.getImage(j)
+        if j in failed_images or img_j.triangulated or img_i.des is None or img_j.des is None:
+            continue
+
+        key = (min(current_idx, j), max(current_idx, j))
+        pm = sfm.pairMatches.get(key)
+        if not pm:
+            continue
+
+        matches = pm["matches"]
+        kp_pairs = pm["kp_pairs"]
+
+        good = [idx for idx, m in enumerate(matches) if m.distance < 55]
+        if len(good) < 8:
+            continue
+
+        pts_i = np.float32([img_i.kp[kp_pairs[g][0]].pt for g in good])
+        pts_j = np.float32([img_j.kp[kp_pairs[g][1]].pt for g in good])
+
+        E, mask_E = cv.findEssentialMat(
+            pts_i, pts_j, sfm.K,
+            method=cv.RANSAC, prob=0.999, threshold=1.0
+        )
+        if mask_E is None:
+            continue
+
+        inliers = int(mask_E.sum())
+        if inliers > best_inliers:
+            best_inliers = inliers
+            best_j = j
+
+    if best_j is None or best_inliers < 8:
+        print(f"[WARN] No good next image found from {current_idx}. best_inliers={best_inliers}")
+        return None
+
+    print(f"[INFO] Next image: {best_j} with {best_inliers} inliers")
+    return best_j
+
+def buildViewGraph(sfm, min_pair_overlap=20):
+    """
+    view_graph[i][j] = number of mutual matches between image i and j
+    """
+    view_graph = {i: {} for i in range(sfm.imageCount)}
+    for (i, j), entry in sfm.pairMatches.items():
+        n = len(entry["kp_pairs"])
+        if n >= min_pair_overlap:
+            view_graph[i][j] = n
+            view_graph[j][i] = n
+    return view_graph
+
+
+def findComponents(sfm, view_graph):
+    """
+    Find connected components in the view graph via standard graph traversal.
+    Returns: list of components, each a list of image indices.
+    """
+    visited = set()
+    components = []
+
+    for v in range(sfm.imageCount):
+        if v not in visited:
+            stack = [v]
+            comp = []
+            while stack:
+                u = stack.pop()
+                if u in visited:
+                    continue
+                visited.add(u)
+                comp.append(u)
+                for nbr in view_graph[u].keys():
+                    if nbr not in visited:
+                        stack.append(nbr)
+            if len(comp) > 1:
+                components.append(sorted(comp))
+
+    return components
+
+def chooseNextImageComponent(sfm, registered, comp, failed_images,
+                                view_graph=None,
+                                alpha=0.7, beta=0.3,
+                                min_2d3d=6):
+    """
+    Choose the next image to register inside a given component.
+
+    - `registered`: set of already triangulated image indices
+    - `comp`: list of image indices in this component
+    - `failed_images`: images we already tried and failed PnP on
+    - `view_graph`: optional adjacency dict
+    """
+    best_j = None
+    best_score = -1.0
+
+    for j in comp:
+        if j in registered or j in failed_images:
+            continue
+
+        img_j = sfm.getImage(j)
+        if img_j is None or img_j.des is None:
+            continue
+
+        # 1) Collect 2D–3D correspondences for this candidate j
+        obj_points = []
+        img_points = []
+        used_kp_j = set()
+
+        for k in registered:
+            key = (min(k, j), max(k, j))
+            pm = sfm.pairMatches.get(key)
+            if not pm:
+                continue
+
+            matches = pm["matches"]
+            kp_pairs = pm["kp_pairs"]
+
+            good = [idx for idx, m in enumerate(matches) if m.distance < 55]
+            if len(good) < 3:
+                continue
+
+            img_k = sfm.getImage(k)
+            for gi in good:
+                kp_k, kp_j = kp_pairs[gi]
+                if k > j:
+                    kp_k, kp_j = kp_j, kp_k
+
+                if kp_j in used_kp_j:
+                    continue
+                used_kp_j.add(kp_j)
+
+                pt_id = sfm.kp_to_point.get((k, kp_k))
+                if pt_id is None:
+                    continue
+                pt = sfm.getPoint(pt_id)
+                if pt is None or pt.coord is None:
+                    continue
+
+                obj_points.append(pt.coord)
+                img_points.append(img_j.kp[kp_j].pt)
+
+        obj_points = np.asarray(obj_points, np.float32)
+        img_points = np.asarray(img_points, np.float32)
+        M_existing = obj_points.shape[0]
+
+        # If we have almost no 2D–3D support yet, skip this candidate for now.
+        if M_existing < min_2d3d:
+            continue
+
+        # 2) Count potential new structure: 2D matches that don't yet map to 3D points
+        M_new = 0
+        for k in registered:
+            key = (min(k, j), max(k, j))
+            pm = sfm.pairMatches.get(key)
+            if not pm:
+                continue
+
+            kp_pairs = pm["kp_pairs"]
+            for kp_k_idx, kp_j_idx in kp_pairs:
+                if k > j:
+                    kp_k_idx, kp_j_idx = kp_j_idx, kp_k_idx
+                if (j, kp_j_idx) not in sfm.kp_to_point: # new observation
+                    M_new += 1
+
+        # 3) View-graph degree bonus
+        degree = len(view_graph.get(j, []))
+        gamma = 0.05
+
+        # so we take into a mix of observations existing between w/ observations that would add new structure
+        # NOTE: this was an attempt to try to get introduce more structure and not fall flat onto dominant plane...
+        #       as it stands, this is not sufficient
+        score = alpha * float(M_existing) + beta * float(M_new) + gamma * float(degree)
+
+        if score > best_score:
+            best_score = score
+            best_j = j
+
+    if best_j is None:
+        print("[WARN] No suitable next image found in this component.")
+        return None
+
+    print(f"[INFO] Next image (component-wise): {best_j}, score={best_score:.2f}")
+    return best_j
+
+def estimateSimilarityRansac(src, dst, num_iters=1000, sample_size=3, threshold=0.05, min_inliers=15):
+    """
+    Robust similarity (scale, R, t) from src -> dst using RANSAC on 3D-3D correspondences.
+    src, dst: (N,3)
+    Returns: (scale, R, t, inlier_mask) or (None, None, None, None) if failed.
+    """
+    src = np.asarray(src, dtype=np.float64)
+    dst = np.asarray(dst, dtype=np.float64)
+    assert src.shape == dst.shape
+    N = src.shape[0]
+    if N < sample_size:
+        return None, None, None, None
+
+    best_inliers = None
+    best_inlier_count = 0
+
+    rng = np.random.default_rng()
+
+    for _ in range(num_iters):
+        idx = rng.choice(N, size=sample_size, replace=False)
+        s_hat, R_hat, t_hat = estimate_similarity_umeyama(src[idx], dst[idx])
+
+        X_src = src
+        X_dst_pred = (s_hat * (R_hat @ X_src.T) + t_hat).T
+        err = np.linalg.norm(X_dst_pred - dst, axis=1)
+        inliers = err < threshold
+        count = int(inliers.sum())
+        if count > best_inlier_count:
+            best_inlier_count = count
+            best_inliers = inliers
+
+    if best_inliers is None or best_inlier_count < min_inliers:
+        return None, None, None, None
+
+    # Re-estimate using all inliers
+    s_final, R_final, t_final = estimate_similarity_umeyama(src[best_inliers], dst[best_inliers])
+    return s_final, R_final, t_final, best_inliers
+
+def mergeComponents(sfm, components, view_graph):
+    """
+    Merge independently reconstructed components into the frame of the first component.
+    This is necessary when we essentially reconstruct multiple "islands" of point clouds and need something
+    to relate them geometrically back together
+    """
+
+    if len(components) <= 1:
+        print("[INFO] Only one component; no merging needed.")
+        return
+
+    base_comp = components[0]
+    base_set = set(base_comp)
+
+    for k in range(1, len(components)):
+        target_comp = components[k]
+        target_set = set(target_comp)
+        print(f"\n[INFO] Merging component {k} into base frame...")
+
+        pts_base = []
+        pts_target = []
+
+        # ------------------------------------------------------------------
+        # 1. Collect 3D-3D correspondences from 2D matches between components
+        # ------------------------------------------------------------------
+        for i in base_set:
+            for j in target_set:
+                key = (min(i, j), max(i, j))
+                pm = sfm.pairMatches.get(key)
+                if not pm:
+                    continue
+
+                kp_pairs = pm["kp_pairs"]
+                for kp_i, kp_j in kp_pairs:
+                    pA = sfm.kp_to_point.get((i, kp_i))
+                    pB = sfm.kp_to_point.get((j, kp_j))
+                    if pA is None or pB is None:
+                        continue
+                    ptA = sfm.getPoint(pA)
+                    ptB = sfm.getPoint(pB)
+                    if ptA is None or ptB is None:
+                        continue
+                    if ptA.coord is None or ptB.coord is None:
+                        continue
+
+                    pts_base.append(ptA.coord)
+                    pts_target.append(ptB.coord)
+
+        pts_base = np.asarray(pts_base, dtype=np.float64)
+        pts_target = np.asarray(pts_target, dtype=np.float64)
+
+        print(f"[INFO] Component {k}: found {len(pts_base)} raw 3D-3D pairs.")
+
+        if pts_base.shape[0] < 8:
+            print("[WARN] Not enough 3D-3D correspondences to merge this component; skipping.")
+            continue
+
+        # ------------------------------------------------------------------
+        # 2. RANSAC similarity from target -> base
+        # ------------------------------------------------------------------
+        scale, R_s, t_s, inliers = estimateSimilarityRansac(
+            src=pts_target,
+            dst=pts_base,
+            num_iters=1000,
+            sample_size=3,
+            threshold=0.05,   # tune depending on scene scale
+            min_inliers=15
+        )
+
+        if scale is None:
+            print("[WARN] Failed to robustly estimate similarity for component", k)
+            continue
+
+        print(f"[INFO] Component {k}: similarity estimated with {inliers.sum()} inliers. scale={scale:.4f}")
+
+        # ------------------------------------------------------------------
+        # 3. Apply similarity to cameras and points of target component
+        # ------------------------------------------------------------------
+        target_image_set = set(target_comp)
+
+        # Cameras
+        for idx in target_comp:
+            img = sfm.getImage(idx)
+            if img is None or img.R is None or img.t is None:
+                continue
+
+            R_cam = img.R.astype(np.float64)
+            t_cam = img.t.astype(np.float64)  # (3,1) or (3,)
+
+            if t_cam.ndim == 1:
+                t_cam = t_cam.reshape(3, 1)
+
+            R_new = R_cam @ R_s.T
+            t_new = scale * t_cam - R_cam @ R_s.T @ t_s
+
+            img.R = R_new.astype(np.float32)
+            img.t = t_new.astype(np.float32)
+
+        # Points
+        for pidx, pt in sfm.pts.items():
+            if pt.coord is None:
+                continue
+            # If this point belongs only to target images, transform it
+            if any((img_idx in target_image_set) for (img_idx, _kp_idx) in pt.correspondences):
+                X = pt.coord.astype(np.float64).reshape(3, 1)
+                X_new = scale * (R_s @ X) + t_s
+                pt.coord = X_new.flatten().astype(np.float32)
+
+        print(f"[INFO] Component {k}: transformed into base coordinate frame.")
+
+    print("[INFO] All components that could be merged are now in the same frame.")
+
+def pickInitialPair(sfm, comp, max_candidates=10, sample_points=200):
+    """
+    Choose a seed pair inside this component that provides good parallax.
+
+    Returns:
+        (i0, j0), match_count
+    """
+
+    # Collect candidate matches inside component
+    pairs = []
+    for i in comp:
+        for j in comp:
+            if i >= j:
+                continue
+            key = (min(i, j), max(i, j))
+            if key in sfm.pairMatches:
+                n_matches = len(sfm.pairMatches[key]["kp_pairs"])
+                if n_matches >= 20:
+                    pairs.append((i, j, n_matches))
+
+    if not pairs:
+        return (None, None), 0
+
+    # Sort by match count (descending) and keep top K
+    pairs.sort(key=lambda x: x[2], reverse=True)
+    candidates = pairs[:max_candidates]
+
+    best_score = -1
+    best_pair = None
+    best_match_count = 0
+
+    for (i0, j0, n_matches) in candidates:
+        key = (min(i0, j0), max(i0, j0))
+        kp_pairs = sfm.pairMatches[key]["kp_pairs"]
+        total = len(kp_pairs)
+
+        if total > sample_points:
+            idx = np.random.choice(total, size=sample_points, replace=False)
+            sub_pairs = [kp_pairs[k] for k in idx]
+        else:
+            sub_pairs = kp_pairs
+
+        if len(sub_pairs) < 8:
+            continue
+
+        pts_i = np.float32([sfm.images[i0].kp[a].pt for a, b in sub_pairs])
+        pts_j = np.float32([sfm.images[j0].kp[b].pt for a, b in sub_pairs])
+
+        E, mask_E = cv.findEssentialMat(
+            pts_i, pts_j, sfm.K,
+            method=cv.RANSAC,
+            prob=0.999,
+            threshold=1.0
+        )
+        if mask_E is None:
+            continue
+
+        mask_E = mask_E.ravel().astype(bool)
+        pts_i = pts_i[mask_E]
+        pts_j = pts_j[mask_E]
+
+        # Need some inliers for usable geometry
+        if pts_i.shape[0] < 30:
+            continue
+
+        # Triangulate relative baseline only (R1=I, t1=[0])
+        _, R, t, _ = cv.recoverPose(E, pts_i, pts_j, sfm.K)
+        pts3d = triangulate(
+            pts_i, pts_j,
+            np.eye(3), np.zeros((3, 1)),
+            R, t,
+            sfm.K,
+            decimal_pts=2
+        )
+
+        # Skip if degenerate triangulation
+        if pts3d.shape[0] < 10:
+            continue
+
+        # Compute SVD of centered structure
+        Xc = pts3d - pts3d.mean(axis=0)
+        U, S, Vt = np.linalg.svd(Xc)
+
+        if S[0] <= 0:
+            continue
+
+        nonplanarity = S[2] / S[0]
+        if nonplanarity > best_score:
+            best_score = nonplanarity
+            best_pair = (i0, j0)
+            best_match_count = n_matches
+
+    # Fallback if no candidate is geometrically good
+    if best_pair is None:
+        i0, j0, best_match_count = pairs[0]
+        print("[WARN] Using fallback seed pair on match count only.")
+        return (i0, j0), best_match_count
+
+    print(f"[INFO] Selected seed pair {best_pair} with parallax score {best_score:.4f}")
+    return best_pair, best_match_count
+
+@profile
+def triangulateWithExistingCameras(sfm, new_idx, reproj_thresh=2.0):
+    new_img = sfm.getImage(new_idx)
+
+    for k, img_k in sfm.images.items():
+        if k == new_idx or not img_k.triangulated:
+            continue
+
+        key = (min(k, new_idx), max(k, new_idx))
+        pm = sfm.pairMatches.get(key)
+        if not pm:
+            continue
+
+        matches = pm["matches"]
+        kp_pairs = pm["kp_pairs"]
+
+        # Basic descriptor-quality filter
+        good = [i for i, m in enumerate(matches) if m.distance < 55.0]
+        if len(good) < 8:
+            continue
+
+        # Build raw 2D–2D arrays with correct index mapping
+        pts_k = []
+        pts_new = []
+        idx_k = []
+        idx_new = []
+
+        for gi in good:
+            kp_i, kp_j = kp_pairs[gi]
+
+            if k < new_idx:
+                # keypoint order in kp_pairs: (k, new_idx)
+                idx_k.append(kp_i)
+                idx_new.append(kp_j)
+                pts_k.append(img_k.kp[kp_i].pt)
+                pts_new.append(new_img.kp[kp_j].pt)
+            else:
+                # if ever used with reversed order, keep it consistent
+                idx_k.append(kp_j)
+                idx_new.append(kp_i)
+                pts_k.append(img_k.kp[kp_j].pt)
+                pts_new.append(new_img.kp[kp_i].pt)
+
+        pts_k = np.float32(pts_k)
+        pts_new = np.float32(pts_new)
+        idx_k = np.asarray(idx_k)
+        idx_new = np.asarray(idx_new)
+
+        if pts_k.shape[0] < 8:
+            continue
+
+        # filter with essential mat
+        E, mask_E = cv.findEssentialMat(
+            pts_k, pts_new, sfm.K,
+            method=cv.RANSAC, prob=0.999, threshold=1.0
+        )
+        if mask_E is None:
+            continue
+
+        mask_E = mask_E.ravel().astype(bool)
+        if mask_E.sum() < 8:
+            continue
+
+        pts_k_f = pts_k[mask_E]
+        pts_new_f = pts_new[mask_E]
+        idx_k_f = idx_k[mask_E]
+        idx_new_f = idx_new[mask_E]
+
+        # triangulate
+        pts3d = triangulate(
+            pts_k_f, pts_new_f,
+            img_k.R, img_k.t,
+            new_img.R, new_img.t,
+            sfm.K,
+            decimal_pts=2
+        )
+
+        # Per-point cheirality / parallax / reprojection checks
+        for X, kp_k, kp_new, u_k, u_new in zip(pts3d, idx_k_f, idx_new_f, pts_k_f, pts_new_f):
+            # cheirality
+            depth_k = pointDepth(img_k.R, img_k.t, X)
+            depth_new = pointDepth(new_img.R, new_img.t, X)
+            if depth_k <= 0 or depth_new <= 0:
+                continue
+
+            # parallax
+            angle = parallaxAngle(img_k.R, img_k.t, new_img.R, new_img.t, X)
+            if angle < 1.0:   # in degrees; you can tune to 0.5 or 1.5 if needed
+                continue
+
+            # reprojection
+            if (reprojectionError(sfm.K, img_k.R, img_k.t, X, u_k) > reproj_thresh or
+                reprojectionError(sfm.K, new_img.R, new_img.t, X, u_new) > reproj_thresh):
+                continue
+
+            # Merge with existing point if any
+            pt_id = (sfm.kp_to_point.get((k, kp_k)) or
+                     sfm.kp_to_point.get((new_idx, kp_new)))
+            if pt_id is not None:
+                pt = sfm.getPoint(pt_id)
+                if pt is not None:
+                    pt.addCorrespondence(new_idx, kp_new, sfm)
+                continue
+
+            sfm.addPoint(X, k, kp_k, new_idx, kp_new)
+@profile
+def sfmRun(dataset_dir, viewer):
     """
     Assumptions:
         - Calibrated SfM (no fundamental matrix needed, directly calculate essential matrix with intrinsics)
         - Incremental (not global SfM)
+        - Single camera per dataset
     """
+
+    print(f"[INFO] Loading dataset: {dataset_dir}")
+
+    images = None
+    intrinsics = None
+    extrinsics = None
+    gt = None
+
+    try:
+        images, intrinsics, extrinsics, gt = load_scene_eth3d(dataset_dir)
+        if len(images) > 0 and intrinsics is not None:
+            print("[INFO] Detected ETH3D dataset structure.")
+        else:
+            raise ValueError("ETH3D load returned empty or invalid data")
+
+    except Exception as e:
+        print(f"[WARN] ETH3D load failed: {e}")
+        print("[INFO] Falling back to generic image folder loader. Accuracy not guaranteed!")
+
+        # Fallback: treat dataset_dir as a directory of images only
+        # We assume no ground truth in this case
+        img_files = sorted(list(Path(dataset_dir).glob("*.[jp][pn]g")))
+        if len(img_files) == 0:
+            raise FileNotFoundError(f"No images found in {dataset_dir}")
+
+        images = img_files
+        intrinsics = None
+        extrinsics = None
+        gt = None
+
     sfm = SfmData()
     sfm.setExtractor(FeatureExtractor("SIFT", nfeatures=10000, contrastThreshold=0.03))
     # sfm.setMatcher(matcher = FeatureMatcher("FLANN"))
     # sfm.setExtractor(FeatureExtractor("SIFT", nfeatures=5000))
     sfm.setMatcher(matcher = FeatureMatcher("BF", norm=cv.NORM_L2, crossCheck=False))
 
-    # Construct camera matrix
-    # This block is how the github dataset constructs the camera matrix.
-    # We can prob manipulate these variables for any other camera/dataset we have
-    im_width =  dataset.im_width
-    im_height = dataset.im_height
-    sfm.setCameraIntrinsics(dataset.K)
-
     # ==========================================================
     # 1. Load images and extract features
     # ==========================================================
-    images = load_all_images(dataset.dataset_dir)
+    print("[INFO] Loading in images...")
+    images = loadAllImages(images)
     features = {}
     img_indices = []
     for img_id, img in enumerate(images):
         idx = sfm.addImage(img)
         img_indices.append(idx)
-    print(f"Loaded {len(img_indices)} images")
+    print(f"[INFO] Loaded {len(img_indices)} images")
 
+    if intrinsics is None:
+        print("[INFO] No intrinsics found. Using approximate K")
+        H, W = images[0].shape[:2]
+        f = max(H, W) * 1.15 # TODO: not ideal, but we have to use some metric or do auto-calibration...
+        K = np.array([[f, 0, W/2],
+                      [0, f, H/2],
+                      [0, 0, 1]], dtype=np.float32)
+        sfm.setCameraIntrinsics(K)
+    else:
+        cam_ids = sorted(intrinsics.keys())
+        if len(cam_ids) > 1:
+            print(f"[WARN] Multiple camera intrinsics found ({cam_ids}); using camera_id={cam_ids[0]} as shared K for all images.")
+        sfm.setCameraIntrinsics(intrinsics[cam_ids[0]])
 
     # ==========================================================
     # 2. Match features between image pairs
     # ==========================================================
+    # compute pairwise matches for pairs within a window (much faster on larger datasets compared to all pairs)
+    # NOTE: we take advantage of the fact that images close to each other in each dataset are typically close in the
+    # scene, so this would not be good if a dataset were to have images randomly shuffled
+    window = 8
+    for i in range(len(images)):
+        for j in range(i+1, min(i+1+window, len(images))):
+            img_i = sfm.getImage(i)
+            img_j = sfm.getImage(j)
+            if img_i.des is None or img_j.des is None:
+                print(f"[WARN] Skipping pair ({i},{j}) due to missing descriptors")
+                continue
+            pts1, pts2, pair_matches, kp1, kp2 = sfm.genSIFTMatchPairs(img_i, img_j)
+            print(f"Matched pair ({i}, {j}): {len(pair_matches)} matches")
+
     # Compute and cache pairwise matches for all unique pairs
-    for i, j in combinations(img_indices, 2):
-        img_i = sfm.getImage(i)
-        img_j = sfm.getImage(j)
-        if img_i.des is None or img_j.des is None:
-            print(f"Skipping pair ({i},{j}) due to missing descriptors")
-            continue
-        # TODO: Improve match quality: use KNN ratio test (Lowe) and mutual consistency (cross-check)
-        #       to prune ambiguous matches before geometric estimation.
-        #       Consider spatial verification (e.g., using Essential/Fundamental with RANSAC) per pair.
-        pts1, pts2, pair_matches, kp1, kp2 = sfm.genSIFTMatchPairs(img_i, img_j)
-        sfm.pairMatches[(i, j)] = pair_matches
-        
-        print(f"Matched pair ({i}, {j}): {len(pair_matches)} matches")
-        # print(f"Image 1: {len(kp1)} keypoints")
-        # print(f"Image 2: {len(kp2)} keypoints")
-    
+    # for i, j in combinations(img_indices, 2):
+    #     img_i = sfm.getImage(i)
+    #     img_j = sfm.getImage(j)
+    #     if img_i.des is None or img_j.des is None:
+    #         print(f"[WARN] Skipping pair ({i},{j}) due to missing descriptors")
+    #         continue
+    #     pts1, pts2, pair_matches, kp1, kp2 = sfm.genSIFTMatchPairs(img_i, img_j)
+    #     print(f"Matched pair ({i}, {j}): {len(pair_matches)} matches")
+
+    # build view gfraph
+    view_graph = buildViewGraph(sfm, min_pair_overlap=20)
+    components = findComponents(sfm, view_graph)
+    if not components:
+        # fall back to a single component containing all images
+        components = [img_indices]
+    print("[INFO] View-graph components:")
+    for idx, comp in enumerate(components):
+        print(f"  Component {idx}: {len(comp)} images")
+
     # ==========================================================
     # 3. Iterative triangulation and addition to point cloud
     # ==========================================================    
-    
-    # Init stuff for first iteration of loop
-    # The first iteration of SfM treats first camera as base projection so P = [I | 0] (R = np.eye(3), t = [0, 0, 0])
-    img_i = sfm.getImage(0)
-    img_i.setPose(np.eye(3), np.zeros((3, 1)))
-    img_i.triangulated = True
-    triangulatedCount = 1
-    viewer.updateCameraPoses([{
-                "R": img_i.R,
-                "t": img_i.t,
-                "K": sfm.K,
-                "name": f"Camera 0",
-                "color": "orange"}])
+    total_triangulated = 0
+    for comp_idx, comp in enumerate(components):
+        print(f"\n[INFO] ---- Starting component {comp_idx} ----")
 
-    while triangulatedCount < sfm.imageCount:
-        # Placeholder for getting the next image, for now it is just getting whatever the image at next index is
-        img_j = sfm.getImage(img_i.idx+1)
-        
-        # Match with Lowe's ratio test
-        matches = sfm.matcher.knnMatch(img_i.des, img_j.des)
-        if len(matches) < 20:
-            print(f"Skipping triangulation on {img_i.idx} and {img_j.idx}, bad matches")
-            break
-        
-        pts_i = np.float32([img_i.kp[m.queryIdx].pt for m in matches])
-        pts_j = np.float32([img_j.kp[m.trainIdx].pt for m in matches])
-        # Need to store indices so we don't lose them after filtering
-        idx_i = np.array([m.queryIdx for m in matches])
-        idx_j = np.array([m.trainIdx for m in matches])
-        
-        # Calculate essential matrix (needs to be done for every pair of images)
-        E, mask_E = cv.findEssentialMat(pts_i, pts_j, sfm.K, method=cv.RANSAC, prob=0.999, threshold=1.0)
-        # TODO: Check for degenerate/insufficient inliers and skip/choose another initial pair when needed.
-        # TODO: Consider normalizing points (undistorting and using normalized coordinates) before E estimation.
-        if mask_E is None or mask_E.sum()<10:
-            print(f"Skipping triangulation on {img_i.idx} and {img_j.idx}, bad E")
-            break
-        
-        mask_E = mask_E.ravel().astype(bool) # if you don't do this, opencv complains
-        inliers_i = pts_i[mask_E]
-        inliers_j = pts_j[mask_E]
-        idx_i = idx_i[mask_E]
-        idx_j = idx_j[mask_E]
-        
-        R, t, mask_P = estimatePose(inliers_i, inliers_j, E, sfm.K)
-        # Need to chain new image j pose with image i pose
-        R = img_i.R @ R
-        t = img_i.R @ t + img_i.t
-        img_j.setPose(R,t)
-        
-        mask_P = mask_P.ravel().astype(bool)
-        inliers_i = inliers_i[mask_P]
-        inliers_j = inliers_j[mask_P]
-        idx_i = idx_i[mask_P]
-        idx_j = idx_j[mask_P]
-        print(f"Initial match count between image {img_i.idx} and image {img_j.idx}: {mask_E.size}")
-        print(f"Final inliers count between image {img_i.idx} and image {img_j.idx}: {mask_P.sum()}")
+        (i0, j0), n_matches = pickInitialPair(sfm, comp)
+        if (i0, j0) is None:
+            print(f"[WARN] No valid seed pair for component {comp_idx}, skipping.")
+            continue
 
-        # We will probably want to use 1 or 2 decimal points, integer looked unusable
-        ptCloud = triangulate(inliers_i, inliers_j, img_i.R, img_i.t, img_j.R, img_j.t, sfm.K, decimal_pts=2)
+        print(f"[INFO] Component {comp_idx}: seed pair ({i0}, {j0}) with {n_matches} matches")
 
-        # idx i/j, inliers i/j, and ptCloud all should have same number of entries, can loop through any of their sizes
-        for idx in range(idx_j.size):
-            # TODO: Need some kind of handling on what to do if we have a 3d point that already exists due to rounding
-            # Merge into one? Do suppression? Need to research
+        img_i = sfm.getImage(i0)
+        img_j = sfm.getImage(j0)
 
-            # try merging
-            pt_idx = sfm.kp_to_point.get((img_i.idx, idx_i[idx]))
-            if pt_idx is None:
-                pt_idx = sfm.kp_to_point.get((img_j.idx, idx_j[idx]))
+        if img_i.R is None or img_i.t is None:
+            img_i.setPose(np.eye(3, dtype=np.float32), np.zeros((3, 1), dtype=np.float32))
+        img_i.triangulated = True
 
-            if pt_idx is not None:
-                pt = sfm.getPoint(pt_idx)
-                pt.addCorrespondence(img_i.idx, idx_i[idx], sfm)
-                pt.addCorrespondence(img_j.idx, idx_j[idx], sfm)
-                sfm.kp_to_point[(img_i.idx, idx_i[idx])] = pt.idx
-                sfm.kp_to_point[(img_j.idx, idx_j[idx])] = pt.idx
-            else:
-                sfm.addPoint(ptCloud[idx], img_i.idx, idx_i[idx], img_j.idx, idx_j[idx])
+        # Use the already stored matches for (i0, j0)
+        key = (min(i0, j0), max(i0, j0))
+        entry = sfm.pairMatches[key]
+        best_matches = entry["kp_pairs"]
 
+        pts_i = np.float32([sfm.images[i0].kp[kp_i].pt for kp_i, kp_j in best_matches])
+        pts_j = np.float32([sfm.images[j0].kp[kp_j].pt for kp_i, kp_j in best_matches])
 
+        E, mask_E = cv.findEssentialMat(pts_i, pts_j, sfm.K, cv.RANSAC, 0.999, 1.0)
+        mask_E = mask_E.ravel().astype(bool)
 
-        # TODO: Filter triangulated points by cheirality (positive depth), parallax, and reprojection error.
-        runBundleAdjustment(sfm, min_points=20, verbose=1) # can pick verbose=2 here if want to print progress
+        pts_i = pts_i[mask_E]
+        pts_j = pts_j[mask_E]
+        inlier_pairs = [p for p, use in zip(best_matches, mask_E) if use]
 
-        voxelDownsampleFilter(sfm)
+        R, t, _ = estimatePose(pts_i, pts_j, E, sfm.K)
+        img_j.setPose(R, t)
+        img_j.triangulated = True
 
-        # Build full camera list from SfmData
-        cams = []
-        for img_idx, img in sfm.images.items():
-            if img.R is None or img.t is None:
-                continue
-            cams.append({
-                "R": img.R,
-                "t": img.t,
-                "K": sfm.K,
-                "name": f"Camera {img_idx}",
-                "color": "orange"
-            })
+        # Triangulate initial baseline points
+        ptCloud = triangulate(pts_i, pts_j, img_i.R, img_i.t, img_j.R, img_j.t, sfm.K)
+        for (X, (kp_i, kp_j)) in zip(ptCloud, inlier_pairs):
+            sfm.addPoint(X, i0, kp_i, j0, kp_j)
 
+        # Update viewer
+        viewer.updateCameraPoses(sfm.getCameraData())
         pts_xyz, colors = sfm.getPointCloud()
         viewer.updatePoints(pts_xyz, colors)
-        viewer.updateCameraPoses(cams)
 
-        # Increment, img_j becomes img_i for the next iteration
-        img_j.triangulated = True
-        triangulatedCount += 1
+        # Within component, do the typical incremental stuff
+        registered = set([i0, j0])
+        failed_images = set()
+        triangulatedCount = len(registered)
+        total_triangulated += (2 if total_triangulated == 0 else 0)
 
-        img_i = img_j
+        while True:
+            # pick next image inside this component using 2D-3D + view-graph
+            next_idx = chooseNextImageComponent(
+                sfm,
+                registered=registered,
+                comp=comp,
+                failed_images=failed_images,
+                view_graph=view_graph,
+                alpha=0.7,
+                beta=0.3,
+                min_2d3d=6
+            )
+            if next_idx is None:
+                break
 
-        # TODO: Implement incremental reconstruction loop:
-        #   - For each remaining image: find 2D-3D correspondences via feature matches + known tracks.
-        #   - Estimate new camera pose with solvePnPRansac (check MIN_REQUIRED_POINTS).
-        #   - Triangulate new points with existing calibrated views and add to the model.
-        #   - Periodically run local/global bundle adjustment.
-        #   - Update viewer after each step.
-        # TODO: Save reconstruction to disk (e.g., PLY for points + JSON for camera poses).
-        
+            img_j = sfm.getImage(next_idx)
+
+            # Build 2D-3D correspondences
+            obj_points, img_points = buildCorrespondences(sfm, img_j.idx)
+            if obj_points.shape[0] < 6:
+                print(f"[WARN] Not enough 2D-3D matches for image {img_j.idx}")
+                failed_images.add(img_j.idx)
+                continue
+
+            # Run PnP w/ RANSAC
+            success, rvec, tvec, inliers_pnp = cv.solvePnPRansac(
+                obj_points,
+                img_points,
+                sfm.K,
+                None,
+                flags=cv.SOLVEPNP_ITERATIVE,
+                iterationsCount=200,
+                reprojectionError=4.0,
+                confidence=0.999
+            )
+
+            if (not success or inliers_pnp is None or len(inliers_pnp) < 6):
+                print(f"[WARN] PnP failed or too few inliers for image {img_j.idx}")
+                failed_images.add(img_j.idx)
+                continue
+
+            R_j, _ = cv.Rodrigues(rvec)
+            img_j.setPose(R_j, tvec.reshape(3, 1))
+            img_j.triangulated = True
+            registered.add(img_j.idx)
+            triangulatedCount += 1
+            total_triangulated += 1
+
+            # Triangulate new points with existing cameras
+            triangulateWithExistingCameras(sfm, img_j.idx)
+
+            # Local BA every few images (same logic as before)
+            if triangulatedCount >= 4 and triangulatedCount % 3 == 0:
+                runBundleAdjustment(sfm, min_points=50, verbose=0)
+
+            # Voxel downsample + update viewer
+            # voxelDownsampleFilter(sfm)
+            viewer.updatePoints(*sfm.getPointCloud())
+            viewer.updateCameraPoses(sfm.getCameraData())
+
+        print(f"[INFO] Component {comp_idx} finished with {triangulatedCount} cameras registered.")
+ 
+    # TODO: Save reconstruction to disk (e.g., PLY for points + JSON for camera poses).
+    mergeComponents(sfm, components, view_graph)
+    if (triangulatedCount > 5):
+        print("\n[INFO] Running final global bundle adjustment...")
+        runBundleAdjustment(sfm, min_points=50, verbose=2)
+        # mergeClosePoints(sfm)
+        viewer.updatePoints(*sfm.getPointCloud())
+        viewer.updateCameraPoses(sfm.getCameraData())
+
+    print("[INFO] Point cloud construction completed.")
+
+    if gt is not None:
+        print("\n[INFO] Running final evaluation vs GT...")
+        pred_xyz, _ = sfm.getPointCloud()
+        results = evaluatePointCloud(pred_xyz, gt)
+
+        print("\n===== Evaluation Results =====")
+        for k, v in results.items():
+            print(f"{k:22s}: {v}")
+
     # For debug, I would reccommend just printing terminal output to a file if you use this
     # for pt_id, pt in sfm.pts.items():
     #     print(f"Point {pt_id}: 3D coords = {pt.coord}")
@@ -358,16 +1035,16 @@ def sfmRun(dataset, viewer):
 
 if __name__ == "__main__":
     project_root = Path(__file__).resolve().parent.parent
-    dataset_dir = Path(project_root / "dataset")
-    dataset = dataset_loader.select_dataset(dataset_dir)
-    print(f"Using dataset at: {dataset.dataset_dir}")
-    print(f"Image Width: {dataset.im_height}")
-    print(f"Image Height: {dataset.im_width}")
-    print(f"Focal Length: {dataset.focal_length}\n")
-    
-    if not dataset:
-        raise FileNotFoundError(f"Error loading the selected dataset")
+    # dataset_dir = Path(project_root / "dataset")
+    # dataset = dataset_loader.select_dataset(dataset_dir)
 
+    # TODO: smaller representative set (3-4 datasets) that we allow users to pick from, we don't want repo to get too
+    # big. We want the choices to include a eth3d dataset (no more since they are very large).
+
+    # TODO: we could implement this such that if you run "python main.py" you get to choose from the datasets we include
+    # in the repo, but if you run "python main.py <directory>", it can run on any directory full of images.
+    # dataset_dir = Path(project_root / "data" / "eth3d" / "courtyard")
+    dataset_dir = Path(project_root / "dataset" / "erik" / "erik_3")
     viewer = PointCloudViewer("SfM Point Cloud")
-    threading.Thread(target=sfmRun, args=(dataset, viewer), daemon=True).start()
+    threading.Thread(target=sfmRun, args=(dataset_dir, viewer), daemon=True).start()
     viewer.run()
