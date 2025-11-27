@@ -8,8 +8,11 @@ __pycache__
 .venv/
 venv/
 
-# large eth3d datasets (which will be downloaded with script)
-data/
+# exclude huge number of datasets we have on local computer
+dataset/
+
+# include specific datasets
+!dataset/eth3d/courtyard/
 
 # ide stuff
 .vscode
