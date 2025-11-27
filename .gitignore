@@ -13,6 +13,7 @@ dataset/
 
 # include specific datasets
 !dataset/eth3d/courtyard/
+!dataset/erik_?/
 
 # ide stuff
 .vscode
