@@ -11,6 +11,12 @@ venv/
 # exclude eth3d (too big for github)
 dataset/eth3d/
 
+# Exclude Local Download of COLMAP (Go to https://github.com/colmap/colmap/releases, download CUDA or non CUDA if no Nvidia GPU from assets)
+src/third_party/colmap/
+
+# Also Exclude any outputs of COLMAP here
+report/output/colmap/
+
 # ide stuff
 .vscode
 

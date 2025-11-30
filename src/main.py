@@ -13,7 +13,7 @@ from itertools import combinations
 from pathlib import Path
 
 import dataset_loader
-from eth3d_loader import load_scene_eth3d
+from colmap_loader import load_scene_colmap
 from eth3d_eval import evaluatePointCloud
 from point_cloud_viewer import PointCloudViewer
 from feature_extractor import FeatureExtractor
@@ -797,14 +797,14 @@ def sfmRun(dataset_dir, viewer):
     gt = None
 
     try:
-        images, intrinsics, extrinsics, gt = load_scene_eth3d(dataset_dir)
+        images, intrinsics, extrinsics, gt = load_scene_colmap(dataset_dir)
         if len(images) > 0 and intrinsics is not None:
-            print("[INFO] Detected ETH3D dataset structure.")
+            print("[INFO] Detected COLMAP model.")
         else:
-            raise ValueError("ETH3D load returned empty or invalid data")
+            raise ValueError("COLMAP load returned empty or invalid data")
 
     except Exception as e:
-        print(f"[WARN] ETH3D load failed: {e}")
+        print(f"[WARN] COLMAP load failed: {e}")
         print("[INFO] Falling back to generic image folder loader. Accuracy not guaranteed!")
 
         # Fallback: treat dataset_dir as a directory of images only
@@ -1040,6 +1040,7 @@ if __name__ == "__main__":
 
     # TODO: smaller representative set (3-4 datasets) that we allow users to pick from, we don't want repo to get too
     # big. We want the choices to include a eth3d dataset (no more since they are very large).
+    
 
     # TODO: we could implement this such that if you run "python main.py" you get to choose from the datasets we include
     # in the repo, but if you run "python main.py <directory>", it can run on any directory full of images.

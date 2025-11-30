@@ -18,11 +18,15 @@ A small, calibrated, incremental SfM demo that:
 2) Install dependencies
    - `pip install -r requirements.txt`
    - Note: SIFT requires the “contrib” build of OpenCV (opencv-contrib-python).
-
+   - go to download a local Download of COLMAP (Go to https://github.com/colmap/colmap/releases, download CUDA or non CUDA if no Nvidia GPU from assets) Place within src/third_party/colmap/
 3) Run the demo
    - `cd src`
    - `python main.py`
    - A window opens showing the recovered camera frusta and sparse point cloud.
+
+4) Test against COLMAP output for comparisons as TXT files (you get points3d.txt, cameras.txt, and images.txt as outputs)
+   - New-Item -ItemType Directory -Force -Path "report/output/colmap" ; `.\src\third_party\colmap\COLMAP.bat automatic_reconstructor `    --workspace_path "report/output/colmap/" `    --image_path "dataset/erik/erik_3/" `    --use_gpu 0 ; `.\src\third_party\colmap\COLMAP.bat model_converter `    --input_path "report/output/colmap/sparse/0" `    --output_path "report/output/colmap/" `    --output_type TXT
+   
 
 ## Project structure
 - `src/main.py` — Orchestrates the pipeline and viewer
