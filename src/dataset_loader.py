@@ -36,21 +36,20 @@ class DatasetInfo:
         return width, height
             
     def compute_K(self):  
-        f = max(self.im_width, self.im_height) * self.focal_length / 35.0
-        return np.array([[f, 0, self.im_width / 2], [0, f, self.im_height / 2], [0, 0, 1]])
+        return np.array([[self.focal_length, 0, self.im_width / 2], [0, self.focal_length, self.im_height / 2], [0, 0, 1]])
     
 # Hardcode intrinsics for our known datasets
 # Edit this if you want to add a new dataset and have it auto get focal length, or manually add enter when typing dataset name
 dataset_intrics = {
-    "erik\\erik_1": {"focal_length": 45.0},
-    "erik\\erik_2": {"focal_length": 43.0},
-    "erik\\erik_3": {"focal_length": 43.0},
-    "erik\\erik_4": {"focal_length": 43.0},
-    "erik\\erik_5": {"focal_length": 45.0},
-    "erik\\erik_6": {"focal_length": 38.0},
-    "erik\\erik_7": {"focal_length": 38.0},
-    "erik\\erik_8": {"focal_length": 38.0},
-    "erik\\erik_9": {"focal_length": 38.0},
+    "erik\\erik_1": {"focal_length": 2489.14},
+    "erik\\erik_2": {"focal_length": 2378.51},
+    "erik\\erik_3": {"focal_length": 2378.51},
+    "erik\\erik_4": {"focal_length": 2378.51},
+    "erik\\erik_5": {"focal_length": 2489.14},
+    "erik\\erik_6": {"focal_length": 2466.74},
+    "erik\\erik_7": {"focal_length": 2466.74},
+    "erik\\erik_8": {"focal_length": 2466.74},
+    "erik\\erik_9": {"focal_length": 2466.74},
 }
 
 def select_dataset(dataset_dir):    
@@ -75,7 +74,7 @@ def select_dataset(dataset_dir):
         print(f"{idx + len(known_datasets)}. {dataset_name}")
 
     # Ask user to select a dataset
-    choice = input(f"\nPlease select a dataset by entering it's corresponding number. If an unknown dataset is chosen, you will be asked to enter a focal length for it:\n").strip()
+    choice = input(f"\nPlease select a dataset by entering it's corresponding number. If an unknown dataset is chosen, you will be asked to enter a focal length (px) for it:\n").strip()
 
     # Loop until user enters a valid dataset
     while True:
@@ -95,7 +94,7 @@ def select_dataset(dataset_dir):
             # Loop until user enters a valid focal length
             while True:
                 try:
-                    focal_length = float(input(f"Enter the focal length for in mm: ").strip())
+                    focal_length = float(input(f"Enter the focal length for in px: ").strip())
                     return DatasetInfo(dataset_path, focal_length)
                 except ValueError:
                     print("Error: Please enter a valid number for the focal length.")
