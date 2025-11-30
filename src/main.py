@@ -11,6 +11,7 @@ import numpy as np
 import cv2 as cv
 from itertools import combinations
 from pathlib import Path
+import argparse
 
 import dataset_loader
 from colmap_loader import load_scene_colmap
@@ -781,14 +782,14 @@ def triangulateWithExistingCameras(sfm, new_idx, reproj_thresh=2.0):
 
             sfm.addPoint(X, k, kp_k, new_idx, kp_new)
 @profile
-def sfmRun(dataset_dir, viewer):
+def sfmRun(dataset, viewer):
     """
     Assumptions:
         - Calibrated SfM (no fundamental matrix needed, directly calculate essential matrix with intrinsics)
         - Incremental (not global SfM)
         - Single camera per dataset
     """
-
+    dataset_dir = dataset.dataset_dir
     print(f"[INFO] Loading dataset: {dataset_dir}")
 
     images = None
@@ -837,12 +838,19 @@ def sfmRun(dataset_dir, viewer):
     print(f"[INFO] Loaded {len(img_indices)} images")
 
     if intrinsics is None:
-        print("[INFO] No intrinsics found. Using approximate K")
-        H, W = images[0].shape[:2]
-        f = max(H, W) * 1.15 # TODO: not ideal, but we have to use some metric or do auto-calibration...
-        K = np.array([[f, 0, W/2],
-                      [0, f, H/2],
-                      [0, 0, 1]], dtype=np.float32)
+        if dataset.from_cli:
+            print("[INFO] Using intinsics stored for CLI dataset")
+            H = dataset.im_height
+            W = dataset.im_width
+            f = dataset.focal_length
+            K = dataset.K
+        else:
+            print("[INFO] No intrinsics found. Using approximate K")
+            H, W = images[0].shape[:2]
+            f = max(H, W) * 1.15 # TODO: not ideal, but we have to use some metric or do auto-calibration...
+            K = np.array([[f, 0, W/2],
+                        [0, f, H/2],
+                        [0, 0, 1]], dtype=np.float32)
         sfm.setCameraIntrinsics(K)
     else:
         cam_ids = sorted(intrinsics.keys())
@@ -1035,17 +1043,24 @@ def sfmRun(dataset_dir, viewer):
 
 if __name__ == "__main__":
     project_root = Path(__file__).resolve().parent.parent
-    # dataset_dir = Path(project_root / "dataset")
-    # dataset = dataset_loader.select_dataset(dataset_dir)
+    
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--dataset", type=str, default=None, help="(optional) path to dataset directory)")
+    args = parser.parse_args()
+    dataset_path = Path(args.dataset).resolve() if args.dataset else None
+    if (not dataset_path) or (not dataset_path.is_dir()):
+        print("No or invalid dataset path provided. Entering CLI dataset selection")
+        dataset_dir = Path(project_root / "dataset")
+        dataset = dataset_loader.select_dataset(dataset_dir)
+    else:
+        dataset = dataset_loader.DatasetInfo(dataset_path, focal_length=False, from_cli=False)
+        
 
     # TODO: smaller representative set (3-4 datasets) that we allow users to pick from, we don't want repo to get too
     # big. We want the choices to include a eth3d dataset (no more since they are very large).
     
-
-    # TODO: we could implement this such that if you run "python main.py" you get to choose from the datasets we include
-    # in the repo, but if you run "python main.py <directory>", it can run on any directory full of images.
-    # dataset_dir = Path(project_root / "data" / "eth3d" / "courtyard")
-    dataset_dir = Path(project_root / "dataset" / "erik" / "erik_3")
+    # dataset = dataset_loader.DatasetInfo(Path(project_root / "data" / "eth3d" / "courtyard" / "images" / "dslr_images_undistorted"), focal_length=False, from_cli=False)
+    # dataset = dataset_loader.DatasetInfo( Path(project_root / "dataset" / "erik" / "erik_3"), focal_length=False, from_cli=False)
     viewer = PointCloudViewer("SfM Point Cloud")
-    threading.Thread(target=sfmRun, args=(dataset_dir, viewer), daemon=True).start()
+    threading.Thread(target=sfmRun, args=(dataset, viewer), daemon=True).start()
     viewer.run()

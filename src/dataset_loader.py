@@ -3,12 +3,20 @@ import numpy as np
 import cv2 as cv
 
 class DatasetInfo:
-    def __init__(self, dataset_dir, focal_length):
+    def __init__(self, dataset_dir, focal_length=None, from_cli = False):
         self.dataset_dir = dataset_dir
-        self.focal_length = focal_length
-        self.im_width, self.im_height = self.getDimensions()
-        # Compute intrinsic matrix
-        self.K = self.compute_K()
+        self.from_cli = from_cli
+        if (from_cli):
+            self.focal_length = focal_length
+            self.im_width, self.im_height = self.getDimensions()
+            # Compute intrinsic matrix
+            self.K = self.compute_K()
+        else:
+            self.focal_length = None
+            self.im_width = None
+            self.im_height = None
+            # Compute intrinsic matrix
+            self.K = None   
 
     def getDimensions(self):
         images = os.listdir(self.dataset_dir)
@@ -34,29 +42,26 @@ class DatasetInfo:
 # Hardcode intrinsics for our known datasets
 # Edit this if you want to add a new dataset and have it auto get focal length, or manually add enter when typing dataset name
 dataset_intrics = {
-    "erik_1": {"focal_length": 45.0},
-    "erik_2": {"focal_length": 43.0},
-    "erik_3": {"focal_length": 43.0},
-    "erik_4": {"focal_length": 43.0},
-    "erik_5": {"focal_length": 45.0},
-    "erik_6": {"focal_length": 38.0},
-    "erik_7": {"focal_length": 38.0},
-    "erik_8": {"focal_length": 38.0},
-    "erik_9": {"focal_length": 38.0},
+    "erik\\erik_1": {"focal_length": 45.0},
+    "erik\\erik_2": {"focal_length": 43.0},
+    "erik\\erik_3": {"focal_length": 43.0},
+    "erik\\erik_4": {"focal_length": 43.0},
+    "erik\\erik_5": {"focal_length": 45.0},
+    "erik\\erik_6": {"focal_length": 38.0},
+    "erik\\erik_7": {"focal_length": 38.0},
+    "erik\\erik_8": {"focal_length": 38.0},
+    "erik\\erik_9": {"focal_length": 38.0},
 }
 
 def select_dataset(dataset_dir):    
-    all_datasets = [dir for dir in os.listdir(dataset_dir) if os.path.isdir(os.path.join(dataset_dir, dir))]
+    
+    all_datasets = []
+    for current, dirs, files in os.walk(dataset_dir):
+        if not dirs:
+            all_datasets.append(os.path.relpath(current, dataset_dir))
 
-    known_datasets = []
-    unknown_datasets = []
-
-    # list known and unknown datasets separately
-    for dir in all_datasets:
-        if dir in dataset_intrics:
-            known_datasets.append(dir)
-        else:
-            unknown_datasets.append(dir)
+    known_datasets = [d for d in all_datasets if d in dataset_intrics]
+    unknown_datasets = [d for d in all_datasets if d not in dataset_intrics]
             
     print(f"\nDatasets found in: {dataset_dir}")
     # Print known datasets
@@ -79,7 +84,7 @@ def select_dataset(dataset_dir):
             dataset_name = known_datasets[int(choice)]
             print(f"You have chosen: {choice} : {dataset_name}\n")
             dataset_path = os.path.join(dataset_dir, dataset_name)
-            return DatasetInfo(dataset_path, dataset_intrics[dataset_name]["focal_length"])
+            return DatasetInfo(dataset_path, dataset_intrics[dataset_name]["focal_length"], True)
 
         # If unknown dataset is chosen
         elif choice.isdigit() and (len(known_datasets)-1 < int(choice) < len(all_datasets)):
