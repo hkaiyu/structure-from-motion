@@ -25,6 +25,8 @@ from typing import Dict, List, Tuple, Optional
 
 import numpy as np
 
+import subprocess
+
 from third_party.colmap.read_write_model import (
     read_cameras_text,
     read_images_text,
@@ -51,7 +53,7 @@ def _find_colmap_model_dir(scene_root: Path) -> Path:
     candidates: List[Path] = [scene_root, scene_root / "sparse" / "0"]
 
     project_root = Path(__file__).resolve().parent.parent
-    candidates.append(project_root / "report" / "output" / "colmap")
+    candidates.append(project_root / "report" / "output" / "colmap" / scene_root.name)
 
     for c in candidates:
         if _has_colmap_txt(c):
@@ -133,6 +135,127 @@ def _resolve_image_paths(scene_root: Path, image_names: List[str]) -> List[Path]
             return resolved
 
     return resolved
+
+
+def _colmap_output_matches_dataset(model_dir: Path, scene_root: Path, min_match_ratio: float = 0.6) -> bool:
+    """
+    Check whether a COLMAP TXT model likely corresponds to the given dataset directory.
+
+    We read images.txt and verify that at least `min_match_ratio` of the image basenames
+    exist in the dataset directory.
+    """
+    try:
+        images = read_images_text(model_dir / "images.txt")
+    except Exception:
+        return False
+
+    image_names = [Path(img.name).name.lower() for img in images.values()]
+    if not image_names:
+        return False
+
+    exts = (".jpg", ".jpeg", ".png", ".JPG", ".JPEG", ".PNG")
+    ds_files = [p.name.lower() for p in scene_root.iterdir() if p.is_file() and p.suffix in exts]
+    ds_set = set(ds_files)
+
+    match_count = sum(1 for n in image_names if n in ds_set)
+    ratio = match_count / max(1, len(image_names))
+    return ratio >= min_match_ratio
+
+
+def _run_cmd(command: str) -> int:
+    """
+    Run a shell command, stream stdout/stderr to console, and return exit code.
+    """
+    print(f"[COLMAP] Running: {command}")
+    try:
+        proc = subprocess.run(command, shell=True, capture_output=True, text=True)
+        if proc.stdout:
+            print(proc.stdout)
+        if proc.stderr:
+            print(proc.stderr)
+        return proc.returncode
+    except Exception as e:
+        print(f"[COLMAP] Error executing command: {e}")
+        return -1
+
+
+def ensure_colmap_model(scene_root: Path) -> None:
+    """
+    Ensure that a COLMAP TXT model exists and corresponds to the given dataset.
+
+    Steps:
+      1) Look for cameras.txt/images.txt/points3D.txt in:
+         - scene_root
+         - scene_root / 'sparse/0'
+         - project_root / 'report/output/colmap'
+         If found and matches dataset, return.
+      2) If not found, check for COLMAP binaries in src/third_party/colmap.
+      3) If present, run the automatic_reconstructor and then model_converter
+         to produce TXT files under report/output/colmap.
+    """
+    root = Path(scene_root)
+    project_root = Path(__file__).resolve().parent.parent
+    dataset_name = root.name
+
+    candidates = [
+        root,
+        root / "sparse" / "0",
+        project_root / "report" / "output" / "colmap" / dataset_name,
+    ]
+
+    # Step 1: check existing outputs
+    for c in candidates:
+        if _has_colmap_txt(c) and _colmap_output_matches_dataset(c, root, min_match_ratio=0.6):
+            print(f"[INFO] Found existing COLMAP TXT model matching dataset in: {c}")
+            return
+
+    # Step 2: locate COLMAP program
+    colmap_bat = project_root / "src" / "third_party" / "colmap" / "COLMAP.bat"
+    colmap_exe = project_root / "src" / "third_party" / "colmap" / "bin" / "colmap.exe"
+    if colmap_bat.is_file():
+        colmap_cmd = f'"{colmap_bat}"'
+    elif colmap_exe.is_file():
+        colmap_cmd = f'"{colmap_exe}"'
+    else:
+        print("[WARN] COLMAP program not found under src/third_party/colmap. Skipping automatic run.")
+        return
+
+    # Step 3: run COLMAP
+    workspace_path = (project_root / "report" / "output" / "colmap" / dataset_name).resolve()
+    workspace_path.mkdir(parents=True, exist_ok=True)
+    image_path = root.resolve()
+
+    # automatic_reconstructor
+    cmd_recon = (
+        f'{colmap_cmd} automatic_reconstructor '
+        f'--workspace_path "{workspace_path}" '
+        f'--image_path "{image_path}" '
+        f'--use_gpu 0'
+    )
+    rc = _run_cmd(cmd_recon)
+    if rc != 0:
+        print("[ERROR] COLMAP automatic_reconstructor failed; cannot produce model.")
+        return
+
+    # model_converter -> TXT
+    sparse_dir = workspace_path / "sparse" / "0"
+    if not sparse_dir.is_dir():
+        print(f"[ERROR] Expected sparse model at {sparse_dir}, but it was not found after reconstruction.")
+        return
+
+    cmd_convert = (
+        f'{colmap_cmd} model_converter '
+        f'--input_path "{sparse_dir}" '
+        f'--output_path "{workspace_path}" '
+        f'--output_type TXT'
+    )
+    rc2 = _run_cmd(cmd_convert)
+    if rc2 != 0:
+        print("[ERROR] COLMAP model_converter failed; TXT export not produced.")
+        return
+
+    print(f"[INFO] COLMAP TXT model available at: {workspace_path}")
+    return
 
 
 def load_scene_colmap(scene_root) -> Tuple[List[Path], Dict[int, np.ndarray], Dict[str, Tuple[np.ndarray, np.ndarray, int]], Optional[np.ndarray]]:

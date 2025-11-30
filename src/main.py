@@ -14,7 +14,7 @@ from pathlib import Path
 import argparse
 
 import dataset_loader
-from colmap_loader import load_scene_colmap
+from colmap_loader import load_scene_colmap, ensure_colmap_model
 from eth3d_eval import evaluatePointCloud
 from point_cloud_viewer import PointCloudViewer
 from feature_extractor import FeatureExtractor
@@ -791,6 +791,12 @@ def sfmRun(dataset, viewer):
     """
     dataset_dir = dataset.dataset_dir
     print(f"[INFO] Loading dataset: {dataset_dir}")
+
+    # Ensure COLMAP TXT model exists for this dataset (or run COLMAP if missing)
+    try:
+        ensure_colmap_model(Path(dataset_dir))
+    except Exception as e:
+        print(f"[WARN] ensure_colmap_model encountered an error: {e}")
 
     images = None
     intrinsics = None
