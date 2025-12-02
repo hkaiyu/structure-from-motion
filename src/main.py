@@ -835,11 +835,17 @@ def sfmRun(dataset, viewer):
     # 1. Load images and extract features
     # ==========================================================
     print("[INFO] Loading in images...")
+    image_paths = list(images)
     images = loadAllImages(images)
     features = {}
     img_indices = []
     for img_id, img in enumerate(images):
         idx = sfm.addImage(img)
+        # store original path for evaluation/reporting
+        try:
+            sfm.images[idx].path = str(image_paths[img_id])
+        except Exception:
+            pass
         img_indices.append(idx)
     print(f"[INFO] Loaded {len(img_indices)} images")
 
@@ -1033,11 +1039,50 @@ def sfmRun(dataset, viewer):
     if gt is not None:
         print("\n[INFO] Running final evaluation vs GT...")
         pred_xyz, _ = sfm.getPointCloud()
-        results = evaluatePointCloud(pred_xyz, gt)
+
+        # Build predicted camera dict keyed by image index
+        pred_cams = {}
+        for idx, img in sfm.images.items():
+            if img.R is None or img.t is None:
+                continue
+            pred_cams[idx] = (img.R.astype(np.float64), img.t.astype(np.float64))
+
+        # Build GT camera dict keyed by image index (match by basename)
+        gt_cams = {}
+        if extrinsics is not None:
+            # Pre-index GT extrinsics by basename (case-insensitive)
+            ex_by_base = {}
+            for name, (R, t, _cid) in extrinsics.items():
+                base = Path(name).name.lower()
+                ex_by_base[base] = (R, t)
+            for idx in sorted(sfm.images.keys()):
+                img = sfm.getImage(idx)
+                if img is None or getattr(img, "path", None) is None:
+                    continue
+                base = Path(img.path).name.lower()
+                if base in ex_by_base:
+                    Rg, tg = ex_by_base[base]
+                    gt_cams[idx] = (Rg.astype(np.float64), tg.astype(np.float64))
+
+        results = evaluatePointCloud(pred_xyz, gt, pred_cams=pred_cams, gt_cams=gt_cams)
 
         print("\n===== Evaluation Results =====")
         for k, v in results.items():
             print(f"{k:22s}: {v}")
+
+        # Detailed per-camera errors (if available)
+        per_cam = results.get("per_camera_errors")
+        if per_cam:
+            print("\nPer-camera pose errors:")
+            print(f"{'cam_id':>8} {'trans_err(m)':>14} {'rot_err(deg)':>14}")
+            for e in sorted(per_cam, key=lambda x: x["id"]):
+                print(f"{str(e['id']):>8} {e['trans_err']:14.4f} {e['rot_err_deg']:14.3f}")
+
+            trans = np.array([e["trans_err"] for e in per_cam], dtype=float)
+            rot = np.array([e["rot_err_deg"] for e in per_cam], dtype=float)
+
+            def pct(x, p):
+                return float(np.percentile(x, p)) if x.size > 0 else float("nan")
 
     # For debug, I would reccommend just printing terminal output to a file if you use this
     # for pt_id, pt in sfm.pts.items():

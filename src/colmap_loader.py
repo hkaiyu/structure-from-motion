@@ -230,7 +230,9 @@ def ensure_colmap_model(scene_root: Path) -> None:
         f'{colmap_cmd} automatic_reconstructor '
         f'--workspace_path "{workspace_path}" '
         f'--image_path "{image_path}" '
-        f'--use_gpu 0'
+        f'--use_gpu 0 ' 
+        f'--camera_model SIMPLE_PINHOLE '
+        f'--single_camera 1'              
     )
     rc = _run_cmd(cmd_recon)
     if rc != 0:
