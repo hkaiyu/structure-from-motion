@@ -71,20 +71,15 @@ def reprojectionError(K, R, t, X, u):
     return np.linalg.norm(u_hat - u)
 
 @profile
-def loadAllImages(image_list):
-    """
-    Load all images from a dataset directory.
-
-    Args:
-        image_list: list of paths to images
-    Returns:
-        list[np.ndarray]: List of images in BGR order as loaded by OpenCV, sorted by filename.
-    """
+def loadAllImages(image_dir):
+    exts = (".jpg", ".jpeg", ".png", ".gif", ".bmp")
     images = []
-    for fname in image_list:
-        img = cv.imread(fname)
-        if img is None:
-            print(f"Warning: Failed to read image: {fpath}")
-            continue
-        images.append(img)
+    for fname in os.listdir(image_dir):
+        if fname.lower().endswith(exts):
+            fp = os.path.join(image_dir, fname)
+            img = cv.imread(fp)
+            if img is None:
+                print(f"Warning: Failed to read image: {fpath}")
+                continue
+            images.append((fname, img))
     return images
