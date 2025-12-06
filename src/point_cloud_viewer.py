@@ -10,14 +10,15 @@ from PyQt5 import QtWidgets, QtCore
 # resizable.
 class PointCloudViewer(scene.SceneCanvas):
     def __init__(self, title, width=1024, height=768):
-        super().__init__(keys="interactive", title=title,
-                         size=(width, height), show=True)
+        super().__init__(keys="interactive", title=title, size=(width, height), show=True)
         self.unfreeze()
 
         # Data
         self._lock = threading.Lock()
         self.points3d = np.empty((0, 3), np.float32)
-        self.colors = np.empty((0, 3), np.float32)
+        colors = np.empty((0, 3), np.float32)
+        self.color_modes = {"default" : colors}
+        self.current_color_mode = "default"
         self.camera_exts = []
         self.camera_visuals = []
         self.centroid = np.array([0.0, 0.0, 0.0], np.float32)
@@ -48,6 +49,11 @@ class PointCloudViewer(scene.SceneCanvas):
         self.chk_frustums.stateChanged.connect(self._toggleFrustrums)
         settings_layout.addWidget(self.chk_frustums)
 
+        self.color_dropdown = QtWidgets.QComboBox()
+        self.color_dropdown.addItem("default")
+        self.color_dropdown.currentIndexChanged.connect(self._onColorModeChanged)
+        settings_layout.addWidget(QtWidgets.QLabel("Point Colors:"))
+        settings_layout.addWidget(self.color_dropdown)
         settings_layout.addStretch()
 
         main_layout.addWidget(self.settings_panel)
@@ -88,7 +94,7 @@ class PointCloudViewer(scene.SceneCanvas):
 
         with self._lock:
             self.points3d = pts.copy()
-            self.colors = colors.copy()
+            self.color_modes["default"] = colors.copy()
 
         extent = np.ptp(self.points3d, axis=0).max()
         self.view.camera.center = self.points3d.mean(axis=0)
@@ -112,6 +118,13 @@ class PointCloudViewer(scene.SceneCanvas):
 
         self._rebuildCameraFrustrums()
 
+    # NOTE: we _brittly_ assume that this function can only be called after SfM is done, no more points are added/updated
+    # this is fine in our use case
+    def addPointColorOption(self, name, colors):
+        with self._lock:
+            self.color_modes[name] = np.asarray(colors, np.float32)
+        self.color_dropdown.addItem(name)
+
     def _rebuildCameraFrustrums(self):
         for vis in self.camera_visuals:
             vis.parent = None
@@ -125,7 +138,7 @@ class PointCloudViewer(scene.SceneCanvas):
             color = cam["color"]
 
             fx, fy, cx, cy = K[0, 0], K[1, 1], K[0, 2], K[1, 2]
-            scale = 0.00075 * (2 * cx + 2 * cy)
+            scale = 0.0003 * (2 * cx + 2 * cy)
             corners = np.array([
                 [-cx / fx, -cy / fy, 1.0],
                 [ cx / fx, -cy / fy, 1.0],
@@ -156,25 +169,19 @@ class PointCloudViewer(scene.SceneCanvas):
         for vis in self.camera_visuals:
             vis.visible = visible
 
+    def _onColorModeChanged(self, idx):
+        mode = self.color_dropdown.currentText()
+        self.current_color_mode = mode
+
     def onTimer(self, event):
         with self._lock:
             pts = self.points3d.copy()
-            cols = self.colors.copy()
+            cols = self.color_modes.get(self.current_color_mode, self.color_modes["default"]).copy()
 
         if pts.size > 0:
-            if cols.shape[0] != pts.shape[0]:
-                cols = np.full((pts.shape[0], 3),
-                               [0.8, 0.9, 1.0],
-                               dtype=np.float32)
-
-            alpha = np.full((cols.shape[0], 1), 1.0, dtype=np.float32)
+            alpha = np.ones((pts.shape[0], 1), np.float32)
             rgba = np.concatenate([cols, alpha], axis=1).astype(np.float32)
-            self.markers.set_data(
-                pts,
-                face_color=rgba,
-                size=5.0,
-                edge_width=0
-            )
+            self.markers.set_data(pts, face_color=rgba, size=5.0, edge_width=0)
         else:
             self.markers.set_data(np.empty((0, 3), np.float32))
 

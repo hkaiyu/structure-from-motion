@@ -143,7 +143,7 @@ def evaluateAccuracy(sfm, rec_gt, print_summary=False):
         "num_matched_cameras": num_matched,
         "per_camera": [
             {
-                "name": f"Camera {i}",
+                "name": matched_names[i],
                 "rot_deg": float(rot_errors[i]),
                 "trans": float(trans_errors[i])
             }
@@ -234,8 +234,8 @@ def evaluateAccuracy(sfm, rec_gt, print_summary=False):
         print("\n---- Completeness ----")
         print("Since we have no ground truth measurements, we cannot measure completeness in sense of "
               "the number of points in our point cloud that are within x meters of the nearest GT point cloud. "
-              "Instead, we will measure completeness as the number of points in our point cloud within x% of the "
-              "size of the scene, where the scene size is the bounding box from the smallest GT camera pose to largest."
+              "Instead, we will measure completeness as the number of points in our point cloud within x% of the size "
+              "of the scene, where the scene size is the bounding box from the smallest GT camera center to largest."
               )
         print(f"Completeness (0.1% scene size): {completeness_01*100:.2f}%")
         print(f"Completeness (0.5% scene size): {completeness_05*100:.2f}%")
@@ -248,5 +248,7 @@ def evaluateAccuracy(sfm, rec_gt, print_summary=False):
         "pc_errors": pc_metrics,
         "scale": s,
         "rotation": R_sim,
-        "translation": t_sim
+        "translation": t_sim,
+        "aligned_pts": pts_est_aligned,
+        "point_errors": dists
     }

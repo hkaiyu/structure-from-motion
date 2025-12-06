@@ -631,9 +631,95 @@ def sfmRun(dataset, viewer, matcher="BF"):
         if pruned / max(num_before, 1) >= 0.05: # if we pruned over 5% of the point cloud, BA again 
             runBundleAdjustment(sfm, min_points=30, verbose=0)
 
+    viewer.updatePoints(*sfm.getPointCloud())
+    viewer.updateCameraPoses(sfm.getCameraData())
+
     print(f"[INFO] Point cloud construction completed with {triangulatedCount} cameras registered.")
     print("\n[INFO] Running final evaluation vs GT...")
     metrics = evaluateAccuracy(sfm, colmap, print_summary=True)
+
+    s = metrics["scale"]
+    R_sim = metrics["rotation"]
+    t_sim = metrics["translation"]
+    aligned_pts = metrics["aligned_pts"]
+    errors = metrics["point_errors"]
+
+    # NOTE: if you uncomment below code, we align to COLMAPs reconstruction, which for the viewer, may not be ideal.
+    #       the image may get flipped or rotated weirdly, and the camera orientation of the viewer may make it harder
+    #       to see. You can uncomment this, but I personally don't care to (unless we wanted to show the GT and our 
+    #       reconstruction as overlapping each other)
+
+    # # align cameras using calculated s, R, T
+    # aligned_cams = []
+    # for img_idx, img in sfm.images.items():
+    #     if img.R is None or img.t is None:
+    #         continue
+    #
+    #     R = img.R.astype(float)
+    #     t = img.t.reshape(3).astype(float)
+    #     C_est = -R.T @ t
+    #     C_aligned = s * (R_sim @ C_est) + t_sim
+    #     R_aligned = R @ R_sim.T
+    #     t_aligned = -R_aligned @ C_aligned
+    #
+    #     aligned_cams.append({
+    #             "R": R_aligned,
+    #             "t": t_aligned,
+    #             "K": sfm.K,
+    #             "name": f"Camera {img_idx}",
+    #             "color": "orange"})
+    #
+    # _, colors = sfm.getPointCloud()
+    # viewer.updatePoints(aligned_pts.astype(np.float32), colors)
+    # viewer.updateCameraPoses(aligned_cams)
+    
+    # ----- COLOR MODES -----
+    eps = 1e-8
+    # 1. colormap based on GT distance (simple linear interp)
+    #   high error (red) -> medium error (yellow) -> low error (green)
+    errmin, errmax = errors.min(), errors.max()
+    e_norm = (errors - errmin) / (errmax - errmin + eps)
+    colors = np.zeros((len(e_norm), 3), float)
+    colors[:, 0] = e_norm
+    colors[:, 1] = 1 - e_norm * 0.5
+    colors[:, 2] = 0
+    viewer.addPointColorOption("GT Distance", colors)
+    print(f"[INFO] GT distance range:\n\tmin (green) = {errmin:.3f}, max (red) = {errmax:.3f}")
+
+    # 2. colormap based on logarithmic GT distance (helps see large GT deviations easier)
+    #   high error red -> purple -> blue colormap
+    e_log = np.log(errors + eps)
+    e_norm = (e_log - e_log.min()) / (e_log.max() - e_log.min() + eps)
+    colors = np.zeros((len(e_norm), 3), float)
+    colors[:,0] = e_norm
+    colors[:,1] = 0.2 * (1-e_norm)
+    colors[:,2] = 1 - e_norm*0.5
+    viewer.addPointColorOption("GT Distance (Log)", colors)
+    print(f"[INFO] Logarithmic GT distance range:\n\tmin (blue) = {e_log.min():.3f}, max (red) = {e_log.max():.3f}")
+
+    # 3. colormap based on average reproj error
+    #   high error red -> medium orange -> low yellow
+    reproj_avgs = []
+    for pid, pt in sfm.pts.items():
+        errs = []
+        for (img_idx, kp_idx) in pt.correspondences:
+            img = sfm.images[img_idx]
+            u = img.kp[kp_idx].pt
+            err = reprojectionError(sfm.K, img.R, img.t, pt.coord, u)
+            errs.append(err)
+        if len(errs) == 0:
+            reproj_avgs.append(0.0)
+        else:
+            reproj_avgs.append(float(np.mean(errs)))
+    reproj_avgs = np.asarray(reproj_avgs, float)
+    reproj_norm = (reproj_avgs - reproj_avgs.min()) / (reproj_avgs.max() - reproj_avgs.min() + eps)
+    colors = np.zeros((len(reproj_norm), 3), float)
+    colors[:,0] = 1.0
+    colors[:,1] = 1.0 - reproj_norm * 0.7
+    colors[:,2] = 0.2 - reproj_norm * 0.2
+    viewer.addPointColorOption("Mean Reproj Error", colors)
+    print(f"[INFO] Reprojection error range:\n\tmin (yellow) = {reproj_avgs.min():.3f}px, max (red) = {reproj_avgs.max():.3f}px")
+    print("[INFO] Colormap views now available.")
 
 def askUserForFeatureMatcher():
     options = ["BF", "FLANN"]
