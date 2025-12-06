@@ -12,6 +12,7 @@ import cv2 as cv
 from itertools import combinations
 from pathlib import Path
 import argparse
+import time
 import pycolmap
 
 import dataset_loader
@@ -24,7 +25,7 @@ from image_data import ImageData
 from point_data import PointData
 from bundle_adjustment import runBundleAdjustment
 from evaluation import evaluateAccuracy
-from utils import triangulate, triangulatePoint, loadAllImages, reprojectionError, pointDepth, parallaxAngle, profile
+from utils import triangulate, triangulatePoint, loadAllImages, reprojectionError, pointDepth, parallaxAngle, profile, appendToDataTable
 
 class SfmData:
     def __init__(self):
@@ -165,6 +166,106 @@ class SfmData:
         }
         return self.pairMatches[key]
 
+    def pruneObservationsForNewCamera(self, img_idx, reproj_thresh=2.0):
+        img = self.images[img_idx]
+        bad_point_ids = []
+
+        for pid, pt in list(self.pts.items()):
+            X = pt.coord
+            to_remove = []
+
+            for obs in pt.correspondences:
+                im, kp = obs
+                if im != img_idx:
+                    continue
+
+                u = img.kp[kp].pt
+                err = reprojectionError(self.K, img.R, img.t, X, u)
+                if err > reproj_thresh:
+                    to_remove.append(obs)
+
+            # Remove bad obs
+            for obs in to_remove:
+                im, kp = obs
+                pt.correspondences.remove(obs)
+                self.kp_to_point.pop((im, kp), None)
+
+            if len(pt.correspondences) < 2:
+                bad_point_ids.append(pid)
+
+        # delete useless points
+        for pid in bad_point_ids:
+            del self.pts[pid]
+
+        print(f"[INFO] Pruned {len(bad_point_ids)} observations above reprojection threshold ({reproj_thresh}px)")
+        return len(bad_point_ids)
+
+    def pruneGlobalObservations(self, reproj_thresh=2.0):
+        bad_point_ids = []
+
+        for pid, pt in list(self.pts.items()):
+            X = pt.coord
+            to_remove = []
+
+            for obs in pt.correspondences:
+                img_idx, kp_idx = obs
+                img = self.images[img_idx]
+
+                u = img.kp[kp_idx].pt
+                err = reprojectionError(self.K, img.R, img.t, X, u)
+
+                if err > reproj_thresh:
+                    to_remove.append(obs)
+
+            for obs in to_remove:
+                img_idx, kp_idx = obs
+                pt.correspondences.remove(obs)
+                self.kp_to_point.pop((img_idx, kp_idx), None)
+
+            # point no longer valid
+            if len(pt.correspondences) < 2:
+                bad_point_ids.append(pid)
+
+        for pid in bad_point_ids:
+            del self.pts[pid]
+
+        print(f"[INFO] Pruned {len(bad_point_ids)} observations above reprojection threshold ({reproj_thresh}px)")
+        return len(bad_point_ids)
+
+    def pruneSpatialOutliers(self, k=5.0):
+        """
+        Removes outliers that are greater than k standard deviatuibs from centroid
+        """
+        if len(self.pts) < 5:
+            return 0 # too few points to analyze
+
+        coords = np.array([pt.coord for pt in self.pts.values()])
+        centroid = np.mean(coords, axis=0)
+        dists = np.linalg.norm(coords - centroid, axis=1)
+        mean_d = np.mean(dists)
+        std_d  = np.std(dists)
+        if std_d < 1e-6:
+            return 0
+
+        cutoff = mean_d + k * std_d
+
+        # find outlier point IDs
+        to_delete = []
+        for (pid, pt), dist in zip(self.pts.items(), dists):
+            if dist > cutoff:
+                to_delete.append(pid)
+
+        # remove points + their kp_to_point references
+        for pid in to_delete:
+            pt = self.pts[pid]
+            for (img_idx, kp_idx) in pt.correspondences:
+                self.kp_to_point.pop((img_idx, kp_idx), None)
+            del self.pts[pid]
+
+        print(f"[INFO] Pruned {len(to_delete)} spatial outlier points (k={k})")
+        return len(to_delete)
+
+
 # @profile
 def buildCorrespondences(sfm, new_img_idx):
     """
@@ -278,8 +379,9 @@ def pickInitialPair(sfm):
     return (i0, j0), best_inliers
 
 @profile
-def triangulateWithExistingCameras(sfm, new_idx, min_parallax_deg=2.0, reproj_thresh=1.0):
+def triangulateWithExistingCameras(sfm, new_idx, min_parallax_deg=1.5, reproj_thresh=1.0):
     img_j = sfm.images[new_idx]
+
     for i, img_i in sfm.images.items():
         if i == new_idx or not img_i.triangulated:
             continue
@@ -387,6 +489,8 @@ def triangulateInitialPoints(sfm, i, j, R, t):
     img_i.triangulated = True
     img_j.triangulated = True
 
+
+
 @profile
 def sfmRun(dataset, viewer, matcher="BF"):
     """
@@ -395,6 +499,7 @@ def sfmRun(dataset, viewer, matcher="BF"):
         - Incremental (not global SfM)
         - Single camera per dataset
     """
+    start_time = time.time()
     colmap = runColmap(dataset.image_dir, dataset.colmap_dir)
     if dataset.K is None:
         cam = next(iter(colmap.cameras.values()))
@@ -504,11 +609,17 @@ def sfmRun(dataset, viewer, matcher="BF"):
 
         print(f"[INFO] Image {next_idx} registered with {len(inliers_pnp)} PnP inliers.")
 
+        sfm.pruneObservationsForNewCamera(next_idx)
         triangulateWithExistingCameras(sfm, next_idx)
 
         if triangulatedCount >= 4 and triangulatedCount % 3 == 0:
             print("[INFO] Running bundle adjustment...")
             runBundleAdjustment(sfm, min_points=30, verbose=0)
+            num_before = len(sfm.pts)
+            pruned = sfm.pruneGlobalObservations()
+            pruned += sfm.pruneSpatialOutliers()
+            if pruned / max(num_before, 1) >= 0.05: # if we pruned over 5% of the point cloud, BA again 
+                runBundleAdjustment(sfm, min_points=30, verbose=0)
 
         viewer.updatePoints(*sfm.getPointCloud())
         viewer.updateCameraPoses(sfm.getCameraData())
@@ -516,21 +627,149 @@ def sfmRun(dataset, viewer, matcher="BF"):
     if triangulatedCount >= 5:
         print("[INFO] Running final bundle adjustment...")
         runBundleAdjustment(sfm, min_points=30, verbose=0)
+        num_before = len(sfm.pts)
+        pruned = sfm.pruneGlobalObservations()
+        pruned += sfm.pruneSpatialOutliers()
+        if pruned / max(num_before, 1) >= 0.05: # if we pruned over 5% of the point cloud, BA again 
+            runBundleAdjustment(sfm, min_points=30, verbose=0)
+
+    viewer.updatePoints(*sfm.getPointCloud())
+    viewer.updateCameraPoses(sfm.getCameraData())
 
     print(f"[INFO] Point cloud construction completed with {triangulatedCount} cameras registered.")
     print("\n[INFO] Running final evaluation vs GT...")
-    metrics = evaluateAccuracy(sfm, colmap)
-    # TODO: make print more clean? or even write to csv for easier evaluation/plot generation?
-    print(" POSE ERRORS:", metrics["pose_errors"])
-    print(" POINT CLOUD ERRORS:", metrics["pc_errors"])
+    metrics = evaluateAccuracy(sfm, colmap, print_summary=True)
 
-    # For debug, I would reccommend just printing terminal output to a file if you use this
-    # for pt_id, pt in sfm.pts.items():
-    #     print(f"Point {pt_id}: 3D coords = {pt.coord}")
-    #     for img_idx, kp_idx in pt.correspondences:
-    #         print(f"  seen in image {img_idx}, keypoint {kp_idx}")
-    # for (img_idx, kp_idx), pt_id in sfm.kp_to_point.items():
-    #     print(f"Image {img_idx}, keypoint {kp_idx} -> Point {pt_id}, 3D = {sfm.pts[pt_id].coord}")
+    s = metrics["scale"]
+    R_sim = metrics["rotation"]
+    t_sim = metrics["translation"]
+    aligned_pts = metrics["aligned_pts"]
+    errors = metrics["point_errors"]
+
+    # NOTE: if you uncomment below code, we align to COLMAPs reconstruction, which for the viewer, may not be ideal.
+    #       the image may get flipped or rotated weirdly, and the camera orientation of the viewer may make it harder
+    #       to see. You can uncomment this, but I personally don't care to (unless we wanted to show the GT and our 
+    #       reconstruction as overlapping each other)
+
+    # # align cameras using calculated s, R, T
+    # aligned_cams = []
+    # for img_idx, img in sfm.images.items():
+    #     if img.R is None or img.t is None:
+    #         continue
+    #
+    #     R = img.R.astype(float)
+    #     t = img.t.reshape(3).astype(float)
+    #     C_est = -R.T @ t
+    #     C_aligned = s * (R_sim @ C_est) + t_sim
+    #     R_aligned = R @ R_sim.T
+    #     t_aligned = -R_aligned @ C_aligned
+    #
+    #     aligned_cams.append({
+    #             "R": R_aligned,
+    #             "t": t_aligned,
+    #             "K": sfm.K,
+    #             "name": f"Camera {img_idx}",
+    #             "color": "orange"})
+    #
+    # _, colors = sfm.getPointCloud()
+    # viewer.updatePoints(aligned_pts.astype(np.float32), colors)
+    # viewer.updateCameraPoses(aligned_cams)
+    
+    # ----- COLOR MODES -----
+    eps = 1e-8
+    # 1. colormap based on GT distance (simple linear interp)
+    #   high error (red) -> medium error (yellow) -> low error (green)
+    errmin, errmax = errors.min(), errors.max()
+    e_norm = (errors - errmin) / (errmax - errmin + eps)
+    colors = np.zeros((len(e_norm), 3), float)
+    colors[:, 0] = e_norm
+    colors[:, 1] = 1 - e_norm * 0.5
+    colors[:, 2] = 0
+    viewer.addPointColorOption("GT Distance", colors)
+    print(f"[INFO] GT distance range:\n\tmin (green) = {errmin:.3f}, max (red) = {errmax:.3f}")
+
+    # 2. colormap based on logarithmic GT distance (helps see large GT deviations easier)
+    #   high error red -> purple -> blue colormap
+    e_log = np.log(errors + eps)
+    e_norm = (e_log - e_log.min()) / (e_log.max() - e_log.min() + eps)
+    colors = np.zeros((len(e_norm), 3), float)
+    colors[:,0] = e_norm
+    colors[:,1] = 0.2 * (1-e_norm)
+    colors[:,2] = 1 - e_norm*0.5
+    viewer.addPointColorOption("GT Distance (Log)", colors)
+    print(f"[INFO] Logarithmic GT distance range:\n\tmin (blue) = {e_log.min():.3f}, max (red) = {e_log.max():.3f}")
+
+    # 3. colormap based on average reproj error
+    #   high error red -> medium orange -> low yellow
+    reproj_avgs = []
+    for pid, pt in sfm.pts.items():
+        errs = []
+        for (img_idx, kp_idx) in pt.correspondences:
+            img = sfm.images[img_idx]
+            u = img.kp[kp_idx].pt
+            err = reprojectionError(sfm.K, img.R, img.t, pt.coord, u)
+            errs.append(err)
+        if len(errs) == 0:
+            reproj_avgs.append(0.0)
+        else:
+            reproj_avgs.append(float(np.mean(errs)))
+    reproj_avgs = np.asarray(reproj_avgs, float)
+    reproj_norm = (reproj_avgs - reproj_avgs.min()) / (reproj_avgs.max() - reproj_avgs.min() + eps)
+    colors = np.zeros((len(reproj_norm), 3), float)
+    colors[:,0] = 1.0
+    colors[:,1] = 1.0 - reproj_norm * 0.7
+    colors[:,2] = 0.2 - reproj_norm * 0.2
+    viewer.addPointColorOption("Mean Reproj Error", colors)
+    print(f"[INFO] Reprojection error range:\n\tmin (yellow) = {reproj_avgs.min():.3f}px, max (red) = {reproj_avgs.max():.3f}px")
+    print("[INFO] Colormap views now available.")
+
+    # -------- Append rows to report/tables --------
+    dataset_label = os.path.basename(os.path.normpath(dataset.scene_dir))
+    pose = metrics["pose_errors"]
+    pc = metrics["pc_errors"]
+
+    def fmt(x, nd=3):
+        try:
+            return f"{float(x):.{nd}f}"
+        except Exception:
+            return "nan"
+
+    cam_row = (
+        f"{dataset_label} & "
+        f"{fmt(pose.get('rot_mean_deg'))} & {fmt(pose.get('rot_median_deg'))} & "
+        f"{fmt(pose.get('rot_min_deg'))} & {fmt(pose.get('rot_max_deg'))} & "
+        f"{fmt(pose.get('trans_mean'))} & {fmt(pose.get('trans_median'))} & "
+        f"{fmt(pose.get('trans_min'))} & {fmt(pose.get('trans_max'))} & "
+        f"{int(pose.get('num_matched_cameras', 0))}"
+    )
+
+    runtime_s = time.time() - start_time
+    pc_row = (
+        f"{dataset_label} & "
+        f"{int(pc.get('num_gt_points', 0))} & {int(pc.get('num_est_points', 0))} & "
+        f"{fmt(pc.get('scene_diagonal'))} & "
+        f"{fmt(pc.get('completeness_0_1pct'))} & "
+        f"{fmt(pc.get('completeness_0_5pct'))} & "
+        f"{fmt(pc.get('completeness_1pct'))} & "
+        f"{runtime_s:.2f}"
+    )
+
+    # Min/max ranges for errors already computed above
+    errmin, errmax = errors.min(), errors.max()
+    e_log = np.log(errors + 1e-8)
+    reproj_min = reproj_avgs.min()
+    reproj_max = reproj_avgs.max()
+    proj_row = (
+        f"{dataset_label} & "
+        f"{errmin:.3f} & {errmax:.3f} & "
+        f"{e_log.min():.3f} & {e_log.max():.3f} & "
+        f"{reproj_min:.3f} & {reproj_max:.3f}"
+    )
+
+    appendToDataTable("cameraPoseErrors", cam_row)
+    appendToDataTable("pointCloudErrors", pc_row)
+    appendToDataTable("projectionErrors", proj_row)
+
 
 def askUserForFeatureMatcher():
     options = ["BF", "FLANN"]

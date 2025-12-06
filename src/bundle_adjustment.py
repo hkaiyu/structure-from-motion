@@ -68,12 +68,10 @@ def baSparsity(n_cameras, n_points, camera_indices, point_indices):
     for s in range(3):
         A[2 * obs_idx, base + point_indices * 3 + s] = 1
         A[2 * obs_idx + 1, base + point_indices * 3 + s] = 1
-
     return A
 
 def baBuildProblem(sfm):
     """ Build camera_params, points_3d, camera_indices, point_indices, points_2d from SfmData. """
-    # map image index -> camera index [0..n_cameras-1]
     cam_img_indices = []
     for img_idx, img in sfm.images.items():
         if img.R is not None and img.t is not None:
@@ -142,7 +140,6 @@ def baBuildProblem(sfm):
     points_2d = np.asarray(points_2d, dtype=np.float64)
 
     return camera_params, points_3d, camera_indices, point_indices, points_2d, imgidx_to_camidx, ptid_to_local
-
 @profile
 def runBundleAdjustment(sfm, min_points=20, verbose=1):
     """
@@ -198,5 +195,7 @@ def runBundleAdjustment(sfm, min_points=20, verbose=1):
     for pid, local_idx in ptid_to_local.items():
         sfm.pts[pid].coord = pts_opt[local_idx].astype(np.float64)
 
+    residuals = res.fun
+    rms_reproj = np.sqrt(np.sum(res.fun **2) / residuals.size)
     print(f"[INFO] Bundle adjustment optimized {n_cameras} cameras, {n_points} points, "
-          f"{camera_indices.size} observations. Final cost: {res.cost:.3f}")
+          f"{camera_indices.size} observations. Per-residual RMS error: {rms_reproj:.3f}")

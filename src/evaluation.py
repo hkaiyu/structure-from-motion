@@ -5,39 +5,26 @@ import pycolmap
 from scipy.spatial.transform import Rotation as R
 from scipy.spatial import cKDTree
 
-def umeyama(X, Y):
-    X = np.asarray(X, dtype=float)
-    Y = np.asarray(Y, dtype=float)
-    assert X.shape == Y.shape and X.shape[1] == 3
+# https://zpl.fi/aligning-point-patterns-with-kabsch-umeyama-algorithm/
+def kabsch_umeyama(A, B):
+    assert A.shape == B.shape
+    n, m = A.shape
 
-    n = X.shape[0]
-    if n < 3:
-        s = 1.0
-        R = np.eye(3, dtype=float)
-        t = np.zeros(3, dtype=float)
-        return s, R, t
+    EA = np.mean(A, axis=0)
+    EB = np.mean(B, axis=0)
+    VarA = np.mean(np.linalg.norm(A - EA, axis=1) ** 2)
 
-    mu_X = X.mean(axis=0)
-    mu_Y = Y.mean(axis=0)
+    H = ((A - EA).T @ (B - EB)) / n
+    U, D, VT = np.linalg.svd(H)
+    d = np.sign(np.linalg.det(U) * np.linalg.det(VT))
+    S = np.diag([1] * (m - 1) + [d])
 
-    X0 = X - mu_X
-    Y0 = Y - mu_Y
-    sigma = (Y0.T @ X0) / n
+    R = U @ S @ VT
+    c = VarA / np.trace(np.diag(D) @ S)
+    t = EA - c * R @ EB
+    return R, c, t
 
-    U, D, Vt = np.linalg.svd(sigma)
-    S = np.eye(3)
-    if np.linalg.det(U) * np.linalg.det(Vt) < 0:
-        S[-1, -1] = -1.0
-
-    R = U @ S @ Vt
-    var_Y = (Y0**2).sum() / n
-    s = np.trace(np.diag(D) @ S) / var_Y
-    t = mu_X - s * (R @ mu_Y)
-
-    return float(s), R, t
-
-
-def evaluateAccuracy(sfm, rec_gt):
+def evaluateAccuracy(sfm, rec_gt, print_summary=False):
     gt_by_name = {}
     for img_id, img_gt in rec_gt.images.items():
         basename = os.path.basename(img_gt.name)
@@ -61,9 +48,10 @@ def evaluateAccuracy(sfm, rec_gt):
         if img_gt is None or not img_gt.has_pose:
             continue
 
+        # colmap camera center
         C_gt = np.asarray(img_gt.projection_center(), dtype=float).reshape(3)
 
-        # Our camera center (assuming x_cam = R * x_world + t)
+        # Our camera center
         R_est = np.asarray(img.R, dtype=float).reshape(3, 3)
         t_est = np.asarray(img.t, dtype=float).reshape(3)
         C_est = -R_est.T @ t_est
@@ -110,9 +98,18 @@ def evaluateAccuracy(sfm, rec_gt):
             "translation": np.zeros(3, dtype=float),
         }
 
-    s, R_sim, t_sim = umeyama(centers_gt, centers_est)
+    R_sim, s, t_sim = kabsch_umeyama(centers_gt, centers_est)
 
     # ----- POSE ERRORS -----
+    M = np.zeros((3,3))
+    for i in range(num_matched):
+        Ra = rotations_gt[i]
+        Rb = rotations_est[i] @ R_sim.T
+        M += Ra @ Rb.T
+
+    U, _, Vt = np.linalg.svd(M)
+    Q = U @ Vt
+
     rot_errors = []
     trans_errors = []
 
@@ -122,16 +119,10 @@ def evaluateAccuracy(sfm, rec_gt):
         R_gt = rotations_gt[i]
         R_est = rotations_est[i]
 
-        # Transform our camera center by Sim(3): C_aligned = s * R_sim * C_est + t
         C_est_aligned = s * (R_sim @ C_est) + t_sim
-
-        # Translation error as distance between centers
         trans_errors.append(float(np.linalg.norm(C_gt - C_est_aligned)))
 
-        # To align rotations: world is rotated by R_sim, so camera rotations transform as:
-        R_est_aligned = R_est @ R_sim.T
-
-        # Relative rotation: R_rel = R_gt * R_est_aligned^T
+        R_est_aligned = Q @ (R_est @ R_sim.T)
         R_rel = R_gt @ R_est_aligned.T
         tr = np.clip((np.trace(R_rel) - 1.0) / 2.0, -1.0, 1.0)
         angle_deg = float(np.degrees(np.arccos(tr)))
@@ -141,58 +132,123 @@ def evaluateAccuracy(sfm, rec_gt):
     trans_errors = np.asarray(trans_errors, dtype=float)
 
     pose_metrics = {
-        "rot_mean_deg": float(rot_errors.mean()) if rot_errors.size > 0 else None,
-        "rot_median_deg": float(np.median(rot_errors)) if rot_errors.size > 0 else None,
-        "trans_mean": float(trans_errors.mean()) if trans_errors.size > 0 else None,
-        "trans_median": float(np.median(trans_errors)) if trans_errors.size > 0 else None,
-        "num_matched_cameras": int(num_matched),
+        "rot_mean_deg": float(rot_errors.mean()),
+        "rot_median_deg": float(np.median(rot_errors)),
+        "rot_min_deg": float(rot_errors.min()),
+        "rot_max_deg": float(rot_errors.max()),
+        "trans_mean": float(trans_errors.mean()),
+        "trans_median": float(np.median(trans_errors)),
+        "trans_min": float(trans_errors.min()),
+        "trans_max": float(trans_errors.max()),
+        "num_matched_cameras": num_matched,
+        "per_camera": [
+            {
+                "name": matched_names[i],
+                "rot_deg": float(rot_errors[i]),
+                "trans": float(trans_errors[i])
+            }
+            for i in range(num_matched)
+        ]
     }
-
     # ----- POINT CLOUD ERRORS -----
-    pts_gt = []
-    for p in rec_gt.points3D.values():
-        pts_gt.append(np.asarray(p.xyz, dtype=float).reshape(3))
-    pts_gt = np.asarray(pts_gt, dtype=float)
+    pts_gt = np.asarray([p.xyz for p in rec_gt.points3D.values()], float)
     num_gt_points = pts_gt.shape[0]
 
     pts_est_aligned = []
     for pt in sfm.pts.values():
-        if getattr(pt, "coord", None) is None:
+        if pt.coord is None:
             continue
-        P = np.asarray(pt.coord, dtype=float).reshape(3)
-        P_aligned = s * (R_sim @ P) + t_sim
-        pts_est_aligned.append(P_aligned)
-    pts_est_aligned = np.asarray(pts_est_aligned, dtype=float)
+        P = np.asarray(pt.coord).reshape(3)
+        pts_est_aligned.append(s * (R_sim @ P) + t_sim)
+    pts_est_aligned = np.asarray(pts_est_aligned, float)
     num_est_points = pts_est_aligned.shape[0]
 
-    if num_gt_points > 0 and num_est_points > 0:
-        kdt = cKDTree(pts_gt)
-        dists, _ = kdt.query(pts_est_aligned, k=1)
+    kdt = cKDTree(pts_gt)
+    dists, _ = kdt.query(pts_est_aligned, k=1)
 
-        pc_metrics = {
-            "pc_mean": float(dists.mean()),
-            "pc_median": float(np.median(dists)),
-            "pc_rmse": float(np.sqrt(np.mean(dists**2))),
-            "pc_min": float(dists.min()),
-            "pc_max": float(dists.max()),
-            "num_gt_points": int(num_gt_points),
-            "num_est_points": int(num_est_points),
-        }
-    else:
-        pc_metrics = {
-            "pc_mean": None,
-            "pc_median": None,
-            "pc_rmse": None,
-            "pc_min": None,
-            "pc_max": None,
-            "num_gt_points": int(num_gt_points),
-            "num_est_points": int(num_est_points),
-        }
+    # since we don't have units, we will use scene scale
+    # scene size calculated by the size of the bounding box represented by the min colmap cam center to the max
+    # colmap cam center
+    bbox_min = centers_gt.min(axis=0)
+    bbox_max = centers_gt.max(axis=0)
+    scene_diag = np.linalg.norm(bbox_max - bbox_min)
+
+    # Completeness thresholds
+    th_01pct = 0.001 * scene_diag
+    th_05pct = 0.005 * scene_diag
+    th_1pct = 0.01 * scene_diag
+
+    completeness_01 = float(np.mean(dists <= th_01pct))
+    completeness_05 = float(np.mean(dists <= th_05pct))
+    completeness_1 = float(np.mean(dists<= th_1pct))
+
+    pc_metrics = {
+        "mean": float(dists.mean()),
+        "median": float(np.median(dists)),
+        "rmse": float(np.sqrt(np.mean(dists**2))),
+        "min": float(dists.min()),
+        "max": float(dists.max()),
+        "num_gt_points": num_gt_points,
+        "num_est_points": num_est_points,
+        "scene_diagonal": float(scene_diag),
+        "completeness_0_1pct": completeness_01,
+        "completeness_0_5pct": completeness_05,
+        "completeness_1pct": completeness_1,
+    }
+    if print_summary:
+        print("\n============================================================")
+        print("                     SfM ACCURACY SUMMARY")
+        print("============================================================")
+
+        print("---- Camera Pose Errors ----")
+        print(f"Matched cameras: {num_matched}")
+        print(f"Rotation error (degrees): "
+              f"mean={pose_metrics['rot_mean_deg']:.3f}, "
+              f"median={pose_metrics['rot_median_deg']:.3f}, "
+              f"min={pose_metrics['rot_min_deg']:.3f}, "
+              f"max={pose_metrics['rot_max_deg']:.3f}")
+        print(f"Translation error: " 
+              f"mean={pose_metrics['trans_mean']:.4f}, "
+              f"median={pose_metrics['trans_median']:.4f}, "
+              f"min={pose_metrics['trans_min']:.4f}, "
+              f"max={pose_metrics['trans_max']:.4f}")
+
+        print("Per-camera pose error:")
+        per_cam = pose_metrics['per_camera']
+        for entry in per_cam:
+            print(f"\tName: {entry['name']}")
+            print(f"\tRotation error (degrees): {entry['rot_deg']:.4f}")
+            print(f"\tTranslation error (unknown units): {entry['trans']:.4f}")
+
+        print("\n---- Point Cloud Errors ----")
+        print(f"GT points: {num_gt_points}")
+        print(f"Est points: {num_est_points}")
+        print(f"Scene diagonal: {scene_diag:.4f} (units)")
+
+        print(f"Dist error mean: {pc_metrics['mean']:.4f}")
+        print(f"Dist error median:{pc_metrics['median']:.4f}")
+        print(f"Dist error RMSE: {pc_metrics['rmse']:.4f}")
+        print(f"Dist error min: {pc_metrics['min']:.4f}")
+        print(f"Dist error max: {pc_metrics['max']:.4f}")
+
+        print("\n---- Completeness ----")
+        print("Since we have no ground truth measurements, we cannot measure completeness in sense of "
+              "the number of points in our point cloud that are within x meters of the nearest GT point cloud. "
+              "Instead, we will measure completeness as the number of points in our point cloud within x% of the size "
+              "of the scene, where the scene size is the bounding box from the smallest GT camera center to largest."
+              )
+        print(f"Completeness (0.1% scene size): {completeness_01*100:.2f}%")
+        print(f"Completeness (0.5% scene size): {completeness_05*100:.2f}%")
+        print(f"Completeness (1.0% scene size): {completeness_1*100:.2f}%")
+
+        print("\n======================================\n")
 
     return {
         "pose_errors": pose_metrics,
         "pc_errors": pc_metrics,
-        "scale": float(s),
+        "scale": s,
         "rotation": R_sim,
         "translation": t_sim,
+        "aligned_pts": pts_est_aligned,
+        "point_errors": dists
     }
