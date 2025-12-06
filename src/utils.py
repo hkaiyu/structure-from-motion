@@ -108,3 +108,101 @@ def loadAllImages(image_dir):
                 continue
             images.append((fname, img))
     return images
+
+# ---------------- LaTeX table utilities ---------------- #
+
+TABLE_SCHEMAS = {
+    "cameraPoseErrors": {
+        "headers": [
+            "Rot mean (deg)", "Rot median (deg)", "Rot min", "Rot max",
+            "Trans mean", "Trans median", "Trans min", "Trans max",
+            "Matched cams"
+        ],
+        "caption": "Camera pose error summary",
+        "label": "tab:camera_pose_errors",
+    },
+    "pointCloudErrors": {
+        "headers": [
+            "GT points", "Est points", "Scene diag",
+            "Compl 0.1%", "Compl 0.5%", "Compl 1.0%", "Runtime (s)"
+        ],
+        "caption": "Point cloud quality metrics",
+        "label": "tab:point_cloud_errors",
+    },
+    "projectionErrors": {
+        "headers": [
+            "GT dist min", "GT dist max",
+            "Log GT min", "Log GT max",
+            "Reproj min (px)", "Reproj max (px)"
+        ],
+        "caption": "Projection and reprojection error ranges",
+        "label": "tab:projection_errors",
+    },
+}
+
+
+def getTableHeaders(table_type: str):
+    spec = TABLE_SCHEMAS.get(table_type)
+    if not spec:
+        raise ValueError(f"Unknown table type: {table_type}")
+    return ["Dataset"] + spec["headers"]
+
+
+def appendToDataTable(table_name: str, data_row: str, base_dir: str = None):
+    """
+    Append a single formatted row to report/tables/<table_name>.txt.
+    Ensures directory exists and that rows end with LaTeX linebreak
+    """
+    if base_dir is None:
+        base_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "report", "tables")
+    os.makedirs(base_dir, exist_ok=True)
+    # ensure row ends with ' \\' (LaTeX newline)
+    row = data_row.rstrip()
+    if not row.endswith("\\\\"):
+        row = row + " \\\\"  # literal \\ in output
+    fpath = os.path.join(base_dir, f"{table_name}.txt")
+    with open(fpath, "a", encoding="utf-8") as f:
+        f.write(row + "\n")
+
+
+def printLatexTable(data: str, table_type: str, caption: str = None, label: str = None) -> str:
+    """
+    Wrap raw LaTeX table body lines (e.g., 'dataset & v1 & v2 \\') with a minimal LaTeX table shell.
+    Returns the full LaTeX string.
+    """
+    spec = TABLE_SCHEMAS.get(table_type)
+    if not spec:
+        raise ValueError(f"Unknown table type: {table_type}")
+
+    headers = ["Dataset"] + spec["headers"]
+    if caption is None:
+        caption = spec["caption"]
+    if label is None:
+        label = spec["label"]
+
+    # Column alignment: l for dataset, centered for the rest
+    col_align = "l" + ("c" * (len(headers) - 1))
+
+    begin = (
+        "\\begin{table}[ht]\n"
+        "\\centering\n"
+        "\\small\n"
+        f"\\begin{{tabular}}{{{col_align}}}\n"
+        "\\hline\n"
+        + " & ".join(headers)
+        + " \\\\\
+"
+        "\\hline\n"
+    )
+
+    # Ensure data has trailing newline
+    body = data.strip() + "\n"
+
+    end = (
+        "\\hline\n"
+        "\\end{tabular}\n"
+        f"\\caption{{{caption}}}\n"
+        f"\\label{{{label}}}\n"
+        "\\end{table}\n"
+    )
+    return begin + body + end

@@ -4,3 +4,4 @@ vispy
 scipy
 PyQt5
 pycolmap
+matplotlib

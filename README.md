@@ -27,6 +27,7 @@ A small, calibrated, incremental SfM demo that:
 4) Test against COLMAP output for comparisons as TXT files (you get points3d.txt, cameras.txt, and images.txt as outputs)
    - New-Item -ItemType Directory -Force -Path "report/output/colmap" ; `.\src\third_party\colmap\COLMAP.bat automatic_reconstructor `    --workspace_path "report/output/colmap/" `    --image_path "dataset/erik/erik_3/" `    --use_gpu 0 ; `.\src\third_party\colmap\COLMAP.bat model_converter `    --input_path "report/output/colmap/sparse/0" `    --output_path "report/output/colmap/" `    --output_type TXT
    
+5) When running output of data for the report, make sure any data entries within report/tables is good.  Then proceed to run generate_table.py for png figures to output
 
 ## Project structure
 - `src/main.py` — Orchestrates the pipeline and viewer

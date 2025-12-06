@@ -12,6 +12,7 @@ import cv2 as cv
 from itertools import combinations
 from pathlib import Path
 import argparse
+import time
 import pycolmap
 
 import dataset_loader
@@ -24,7 +25,7 @@ from image_data import ImageData
 from point_data import PointData
 from bundle_adjustment import runBundleAdjustment
 from evaluation import evaluateAccuracy
-from utils import triangulate, triangulatePoint, loadAllImages, reprojectionError, pointDepth, parallaxAngle, profile
+from utils import triangulate, triangulatePoint, loadAllImages, reprojectionError, pointDepth, parallaxAngle, profile, appendToDataTable
 
 class SfmData:
     def __init__(self):
@@ -498,6 +499,7 @@ def sfmRun(dataset, viewer, matcher="BF"):
         - Incremental (not global SfM)
         - Single camera per dataset
     """
+    start_time = time.time()
     colmap = runColmap(dataset.image_dir, dataset.colmap_dir)
     if dataset.K is None:
         cam = next(iter(colmap.cameras.values()))
@@ -720,6 +722,54 @@ def sfmRun(dataset, viewer, matcher="BF"):
     viewer.addPointColorOption("Mean Reproj Error", colors)
     print(f"[INFO] Reprojection error range:\n\tmin (yellow) = {reproj_avgs.min():.3f}px, max (red) = {reproj_avgs.max():.3f}px")
     print("[INFO] Colormap views now available.")
+
+    # -------- Append rows to report/tables --------
+    dataset_label = os.path.basename(os.path.normpath(dataset.scene_dir))
+    pose = metrics["pose_errors"]
+    pc = metrics["pc_errors"]
+
+    def fmt(x, nd=3):
+        try:
+            return f"{float(x):.{nd}f}"
+        except Exception:
+            return "nan"
+
+    cam_row = (
+        f"{dataset_label} & "
+        f"{fmt(pose.get('rot_mean_deg'))} & {fmt(pose.get('rot_median_deg'))} & "
+        f"{fmt(pose.get('rot_min_deg'))} & {fmt(pose.get('rot_max_deg'))} & "
+        f"{fmt(pose.get('trans_mean'))} & {fmt(pose.get('trans_median'))} & "
+        f"{fmt(pose.get('trans_min'))} & {fmt(pose.get('trans_max'))} & "
+        f"{int(pose.get('num_matched_cameras', 0))}"
+    )
+
+    runtime_s = time.time() - start_time
+    pc_row = (
+        f"{dataset_label} & "
+        f"{int(pc.get('num_gt_points', 0))} & {int(pc.get('num_est_points', 0))} & "
+        f"{fmt(pc.get('scene_diagonal'))} & "
+        f"{fmt(pc.get('completeness_0_1pct'))} & "
+        f"{fmt(pc.get('completeness_0_5pct'))} & "
+        f"{fmt(pc.get('completeness_1pct'))} & "
+        f"{runtime_s:.2f}"
+    )
+
+    # Min/max ranges for errors already computed above
+    errmin, errmax = errors.min(), errors.max()
+    e_log = np.log(errors + 1e-8)
+    reproj_min = reproj_avgs.min()
+    reproj_max = reproj_avgs.max()
+    proj_row = (
+        f"{dataset_label} & "
+        f"{errmin:.3f} & {errmax:.3f} & "
+        f"{e_log.min():.3f} & {e_log.max():.3f} & "
+        f"{reproj_min:.3f} & {reproj_max:.3f}"
+    )
+
+    appendToDataTable("cameraPoseErrors", cam_row)
+    appendToDataTable("pointCloudErrors", pc_row)
+    appendToDataTable("projectionErrors", proj_row)
+
 
 def askUserForFeatureMatcher():
     options = ["BF", "FLANN"]
