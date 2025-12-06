@@ -165,6 +165,106 @@ class SfmData:
         }
         return self.pairMatches[key]
 
+    def pruneObservationsForNewCamera(self, img_idx, reproj_thresh=2.0):
+        img = self.images[img_idx]
+        bad_point_ids = []
+
+        for pid, pt in list(self.pts.items()):
+            X = pt.coord
+            to_remove = []
+
+            for obs in pt.correspondences:
+                im, kp = obs
+                if im != img_idx:
+                    continue
+
+                u = img.kp[kp].pt
+                err = reprojectionError(self.K, img.R, img.t, X, u)
+                if err > reproj_thresh:
+                    to_remove.append(obs)
+
+            # Remove bad obs
+            for obs in to_remove:
+                im, kp = obs
+                pt.correspondences.remove(obs)
+                self.kp_to_point.pop((im, kp), None)
+
+            if len(pt.correspondences) < 2:
+                bad_point_ids.append(pid)
+
+        # delete useless points
+        for pid in bad_point_ids:
+            del self.pts[pid]
+
+        print(f"[INFO] Pruned {len(bad_point_ids)} observations above reprojection threshold ({reproj_thresh}px)")
+        return len(bad_point_ids)
+
+    def pruneGlobalObservations(self, reproj_thresh=2.0):
+        bad_point_ids = []
+
+        for pid, pt in list(self.pts.items()):
+            X = pt.coord
+            to_remove = []
+
+            for obs in pt.correspondences:
+                img_idx, kp_idx = obs
+                img = self.images[img_idx]
+
+                u = img.kp[kp_idx].pt
+                err = reprojectionError(self.K, img.R, img.t, X, u)
+
+                if err > reproj_thresh:
+                    to_remove.append(obs)
+
+            for obs in to_remove:
+                img_idx, kp_idx = obs
+                pt.correspondences.remove(obs)
+                self.kp_to_point.pop((img_idx, kp_idx), None)
+
+            # point no longer valid
+            if len(pt.correspondences) < 2:
+                bad_point_ids.append(pid)
+
+        for pid in bad_point_ids:
+            del self.pts[pid]
+
+        print(f"[INFO] Pruned {len(bad_point_ids)} observations above reprojection threshold ({reproj_thresh}px)")
+        return len(bad_point_ids)
+
+    def pruneSpatialOutliers(self, k=5.0):
+        """
+        Removes outliers that are greater than k standard deviatuibs from centroid
+        """
+        if len(self.pts) < 5:
+            return 0 # too few points to analyze
+
+        coords = np.array([pt.coord for pt in self.pts.values()])
+        centroid = np.mean(coords, axis=0)
+        dists = np.linalg.norm(coords - centroid, axis=1)
+        mean_d = np.mean(dists)
+        std_d  = np.std(dists)
+        if std_d < 1e-6:
+            return 0
+
+        cutoff = mean_d + k * std_d
+
+        # find outlier point IDs
+        to_delete = []
+        for (pid, pt), dist in zip(self.pts.items(), dists):
+            if dist > cutoff:
+                to_delete.append(pid)
+
+        # remove points + their kp_to_point references
+        for pid in to_delete:
+            pt = self.pts[pid]
+            for (img_idx, kp_idx) in pt.correspondences:
+                self.kp_to_point.pop((img_idx, kp_idx), None)
+            del self.pts[pid]
+
+        print(f"[INFO] Pruned {len(to_delete)} spatial outlier points (k={k})")
+        return len(to_delete)
+
+
 # @profile
 def buildCorrespondences(sfm, new_img_idx):
     """
@@ -278,8 +378,9 @@ def pickInitialPair(sfm):
     return (i0, j0), best_inliers
 
 @profile
-def triangulateWithExistingCameras(sfm, new_idx, min_parallax_deg=2.0, reproj_thresh=1.0):
+def triangulateWithExistingCameras(sfm, new_idx, min_parallax_deg=1.5, reproj_thresh=1.0):
     img_j = sfm.images[new_idx]
+
     for i, img_i in sfm.images.items():
         if i == new_idx or not img_i.triangulated:
             continue
@@ -386,6 +487,8 @@ def triangulateInitialPoints(sfm, i, j, R, t):
 
     img_i.triangulated = True
     img_j.triangulated = True
+
+
 
 @profile
 def sfmRun(dataset, viewer, matcher="BF"):
@@ -504,11 +607,17 @@ def sfmRun(dataset, viewer, matcher="BF"):
 
         print(f"[INFO] Image {next_idx} registered with {len(inliers_pnp)} PnP inliers.")
 
+        sfm.pruneObservationsForNewCamera(next_idx)
         triangulateWithExistingCameras(sfm, next_idx)
 
         if triangulatedCount >= 4 and triangulatedCount % 3 == 0:
             print("[INFO] Running bundle adjustment...")
             runBundleAdjustment(sfm, min_points=30, verbose=0)
+            num_before = len(sfm.pts)
+            pruned = sfm.pruneGlobalObservations()
+            pruned += sfm.pruneSpatialOutliers()
+            if pruned / max(num_before, 1) >= 0.05: # if we pruned over 5% of the point cloud, BA again 
+                runBundleAdjustment(sfm, min_points=30, verbose=0)
 
         viewer.updatePoints(*sfm.getPointCloud())
         viewer.updateCameraPoses(sfm.getCameraData())
@@ -516,21 +625,15 @@ def sfmRun(dataset, viewer, matcher="BF"):
     if triangulatedCount >= 5:
         print("[INFO] Running final bundle adjustment...")
         runBundleAdjustment(sfm, min_points=30, verbose=0)
+        num_before = len(sfm.pts)
+        pruned = sfm.pruneGlobalObservations()
+        pruned += sfm.pruneSpatialOutliers()
+        if pruned / max(num_before, 1) >= 0.05: # if we pruned over 5% of the point cloud, BA again 
+            runBundleAdjustment(sfm, min_points=30, verbose=0)
 
     print(f"[INFO] Point cloud construction completed with {triangulatedCount} cameras registered.")
     print("\n[INFO] Running final evaluation vs GT...")
-    metrics = evaluateAccuracy(sfm, colmap)
-    # TODO: make print more clean? or even write to csv for easier evaluation/plot generation?
-    print(" POSE ERRORS:", metrics["pose_errors"])
-    print(" POINT CLOUD ERRORS:", metrics["pc_errors"])
-
-    # For debug, I would reccommend just printing terminal output to a file if you use this
-    # for pt_id, pt in sfm.pts.items():
-    #     print(f"Point {pt_id}: 3D coords = {pt.coord}")
-    #     for img_idx, kp_idx in pt.correspondences:
-    #         print(f"  seen in image {img_idx}, keypoint {kp_idx}")
-    # for (img_idx, kp_idx), pt_id in sfm.kp_to_point.items():
-    #     print(f"Image {img_idx}, keypoint {kp_idx} -> Point {pt_id}, 3D = {sfm.pts[pt_id].coord}")
+    metrics = evaluateAccuracy(sfm, colmap, print_summary=True)
 
 def askUserForFeatureMatcher():
     options = ["BF", "FLANN"]

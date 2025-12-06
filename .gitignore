@@ -15,7 +15,7 @@ dataset/eth3d/
 src/third_party/colmap/
 
 # Also Exclude any outputs of COLMAP here
-colmap/
+colmap
 
 # ide stuff
 .vscode
