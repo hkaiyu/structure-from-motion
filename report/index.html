@@ -34,7 +34,7 @@ color: #FF9900;
 <div class="page-header">
 
 <!-- Title and Name --> 
-<h1>Structure from Motion Project Proposal</h1> 
+<h1>Structure from Motion</h1> 
 <span style="font-size: 20px; line-height: 1.5em;"><strong>Kaiyu Hernandez, Jordan Daugherty, & Sanil Hira</strong></span><br>
 <span style="font-size: 18px; line-height: 1.5em;">Fall 2025 ECE 4554/5554 Computer Vision: Course Project</span><br>
 <span style="font-size: 18px; line-height: 1.5em;">Virginia Tech</span>
@@ -42,49 +42,116 @@ color: #FF9900;
 
 <img src="sfm2.png">
 
-<!-- Problem Statement -->
-<h3>Problem Statement</h3>
+<!-- Abstract -->
+<h3> Abstract </h3>
+The Structure From Motion (SfM) problem in computer vision is an algorithm for recovering the three-dimensional 
+structure of fixed structures utilizing a collection of two-dimensional images.  In this report, a survey on the 
+performance of the SfM algorithm is conducted by conducting testing on different image datasets to identify common 
+challenges present in the discipline.
+<br><br>
 
-The goal of our project is to explore structure from motion. We will attempt to reconstruct a 3D sparse point cloud of a scene given 2D images taking from multiple perspectives. This will include:
-<ul>
-  <li>Testing performance/accuracy of our algorithm with different types of datasets</li>
-  <li>Figuring out parameterizations in our algorithms to optimize accuracy in the end result while maintaining a reasonable runtime</li>
-</ul>
-<br>
-<img src="sfm.jpg">
-<!-- Approach -->
-<h3>Approach</h3>
-We will employ use of the OpenCV and NumPy Python libraries to implement our approach. Structure from motion can be done incrementally, building upon the point cloud after processing each image, or globally, which processes all the images before creating the point cloud - we will follow the incremental approach initially. Our main image pipeline will follow:
-<ul>
-  <li>Feature Extraction</li>
+Structure from Motion has been used for applications such as photogrammetry, robotics, or 
+augmented reality. For the surveying of land or structures, SfM photogrammetry proves as a 
+cost-effective alternative to LIDAR sensor based ranging [3].  However, SfM photogrammetry is 
+not without its drawbacks. Some challenges include requiring good lighting/weather conditions, 
+and Ground Control points for accurate georeferencing. For robotics navigation, the SfM algorithm's 
+bundle adjustment approach can help provide convergence for the monocular case of Simultaneous 
+Localization and Mapping (SLAM) [10].
+The SfM algorithm can be briefly split into the following steps:
+<ol>
+  <li>Feature Extraction, </li>
   <li>Feature Matching</li>
-  <li>Camera Pose Estimation & Triangulation</li>
+  <li>3-D reconstruction</li>
   <li>Bundle Adjustment</li>
-</ul>
-<br>
-<!-- Experimentation -->
-<h3>Plans for Experimentation</h3>
-We intend to test on a variety of datasets, ranging from small objects to larger scale scenes. We will start with data from the dataset <a href="https://github.com/sunbuny/3D-Recon_3D-DL_Datasets">found here.</a>
-For a more quantitative approach for measuring the accuracy of our structure from motion algorithm, we plan to model our own basic 3D scenes, and apply our algorithm on a series of digital photographs taken from multiple perspectives in the scene. Analysis here will include comparing our reconstructed 3D point cloud to the objective 3D model of the scene.
-We also intend to test on our own data, taking our own images of a scene from multiple angles and seeing how our real-world images perform compared to the dataset and digital models.<br><br>
+  <li>Meshing and texturing from the point cloud</li>
+</ol>
+Feature extraction is applied to each image 
+within the dataset using a Keypoint detection algorithm such as SIFT or ORB.  Feature matching 
+is performed to provide correspondence of matching keypoints between each image in the dataset. 
+Using the matches between images and the known intrinsic parameters of the camera, Random Sample 
+Consensus (RANSAC) is used to filter outliers in computing the essential matrix, a homographic 
+mapping that would maximize as many inliers matches as possible for use in plotting the 3-D point 
+cloud. This essential matrix can then be used to estimate the relative camera pose for each image, 
+as well as to perform triangulation, computing the position of the 3-D points from the 
+corresponding keypoints in the image. Triangulation introduces reprojection errors when 
+any back-projected rays do not intersect.  These errors in the 3-D point positions can be 
+due to measurement noise or any keypoints that may not have been mapped quite correctly through 
+the RANSAC algorithm.  The Bundle Adjustment step directly addresses the reprojection error.  
+Bundle adjustment is an optimization problem, which focuses on minimizing the sum of squared 
+reprojection errors of the projection of the computed 3D points and their multi-view original 
+image points.  Bundle adjustment also serves to filter out any inconsistent 3D points based on 
+their reprojection errors, which can stem from being outliers in the set of reconstructed points. 
 
-To further optimize our results, we plan to employ techniques such as adjusting kernels for feature extraction, and descriptor matching algorithms.
-To verify the performance of our algorithm, we will test against standard techniques used in modern structure from motion literature.<br><br>
+<br><br>
 
-Other than functions available in OpenCV and NumPy, we plan to write our code from scratch. Success for our project would be accurate 3D sparse point cloud reconstructions of our sample images. Depending on how quickly we can implement this, we may explore more advanced topics in the field such as dense point cloud representations, or exploring global structure from motion.<br><br>
 
-As for uncertainty, we generally can expect that increasing the number of input images we feed to our pipeline would increase the point cloud density, but are unsure if there is a limit to this where potentially adding more images would lead to additional noise and inaccuracies.
-We also expect to have to make some decisions to optimize for either speed or accuracy of the algorithms, but are uncertain of the details until we start implementation. Some speed gains may be worth if it has a fairly low impact in the point cloud representation of the scene, however we do not yet know where in the pipeline we can make these tradeoffs yet. Further analysis into optimization may be required depending on the runtime of our implementation, as it is possible our first draft may not run in a reasonable amount of runtime.
+<p style="text-align: center;">Teaser Figure.</p>
+<img src="teaser.jpg">
 
+<!-- Approach -->
+<h3> Approach </h3>
+For our approach, we focus on the implementation of the classical approach of the SfM 
+algorithm. We generated our code utilizing Python to take advantage of available Computer 
+Vision libraries such as OpenCV.  For visualization of the point cloud structure, we 
+utilize PyQt5 and VisPy libraries to implement our simulation.  As the SfM algorithm 
+recursively iterates through unregistered images of the dataset, new observation points 
+are added to the reconstructed point cloud structure.  Users are able to add their own 
+datasets into the project folder to test their own scenes/structures.  Currently, we 
+include some datasets that are focused on a singular structure, and pan the scene 
+sequentially [4].  Additionally, we include datasets from ETH3D Stereo Benchmarks 
+that include ground truth geometry collected utilizing a high-precision laser scanner [6].
+<br><br>
+
+To use our SfM code, we run our 'main.py' file. The only argument that needs to be passed 
+is the directory of a dataset to use, and the CLI will prompt for the focal length of the 
+camera used. If the directory is left blank, there is a CLI selector to choose from datasets 
+that we have pre-loaded. The bulk of our algorithm is found in the “sfmRun” section of the 
+same main file. It starts by initializing our data structure which will store the images in 
+our dataset, 3D points in our point cloud, the camera intrinsic matrix, our feature matcher 
+and extractor, and a mapping from an image to its corresponding 3D points, and from a 3D point 
+to any image involved in its triangulation. While loading all images, we also compute their 
+keypoints and descriptors using SIFT. (TODO: If we change what feature detector we use make 
+sure we update here) Next, we compute feature matched pairs between our images - as a performance
+optimization, we only do this for images that are within a nearby window, rather than for all 
+combinational pairs of images. We choose the image pair with the most number of matches as our 
+seed pair. Using OpenCV, we apply RANSAC to calculate the essential matrix with the feature 
+matches and known camera intrinsics. Our first iteration will set the camera pose for the first 
+image as the origin, and then use our inlier matches to estimate the pose of the second image's 
+camera. Following iterations will use the second image and a new image, and are able to estimate 
+the new image's camera pose using the already calculated camera pose of the previous image and 
+their feature matches. With the camera poses of each image, we triangulate the inlier keypoints 
+and add these calculated 3D points to our point cloud.  (TODO: Talk about PNP and Bundle Adjustment)
+
+<h3>Experimentation and Metrics</h3>
+
+<h3>Qualitative Results</h3>
+
+<h3>Conclusion</h3>
 
 <br><br>
 <!-- References -->
 <h3>References</h3>
-<ul>
-  <li><a href="https://github.com/sunbuny/3D-Recon_3D-DL_Datasets">https://github.com/sunbuny/3D-Recon_3D-DL_Datasets</a></li>
-  <li><a href="https://www.researchgate.net/figure/Structure-from-Motion-SfM-photogrammetric-principle-Source-Theia-sfmorg-2016_fig3_303824023">https://www.researchgate.net/figure/Structure-from-Motion-SfM-photogrammetric-principle-Source-Theia-sfmorg-2016_fig3_303824023</a></li>
-  <li><a href="https://www.mdpi.com/2313-433X/4/8/98">https://www.mdpi.com/2313-433X/4/8/98</a></li>
-</ul>
+<ol>
+  <li>Lee, JongMin, and Sungjoo Yoo. "Dense-SfM: Structure from Motion with Dense Consistent Matching." Proceedings of the Computer Vision and Pattern Recognition Conference. 2025.</li>
+  <li>Özyeşil, Onur, et al. "A survey of structure from motion*." Acta Numerica 26 (2017): 305-364.</li>
+  <li>Iglhaut, Jakob, et al. "Structure from motion photogrammetry in forestry: A review." Current Forestry Reports 5.3 (2019): 155-168.</li>
+  <li>Erik-Norlin. (2024). Erik-Norlin/structure-from-motion: A project in Computer Vision and an implementation of structure from motion. <a href="https://github.com/sunbuny/3D-Recon_3D-DL_Datasets">GitHub.</a></li>
+  <li>OpenCV Team. (2025). OpenCV documentation (Version 4.12). <a href="https://docs.opencv.org/"></a>OpenCV.</li>
+  <li>T. Schöps, J. L. Schönberger, S. Galliani, T. Sattler, K. Schindler, M. Pollefeys, A. Geiger, "A Multi-View Stereo Benchmark with High-Resolution Images and Multi-Camera Videos", Conference on Computer Vision and Pattern Recognition (CVPR), 2017. 
+  <a href="https://www.eth3d.net/data/schoeps2017cvpr.bib">[Bibtex]</a>
+<a href="https://www.eth3d.net/data/schoeps2017cvpr.pdf">[PDF]</a>
+<a href="https://www.eth3d.net/data/schoeps2017cvpr-supp.pdf">[Supplementary]</a>
+<a href="https://www.eth3d.net/data/poster.pdf">[Poster]</a>
+<a href="https://www.eth3d.net/datasets">[Dataset].</a></li>
+  <li>Snavely, Noah. et al. (2014). BigSFM: Reconstructing the World from Internet Photos. <a href="https://www.cs.cornell.edu/projects/bigsfm/">BigSFM: Reconstructing the world from internet photos.</a></li>
+  <li>Abbott, Lynn. (2025). “ECE 4554/5554 Computer Vision Course Lecture Notes.” Virginia Tech.</li>
+  <li>Spallone, Roberta, Giulia Bertola, and Francesca Ronco. "SFM and digital modelling for enhancing architectural archives heritage." IMEKO TC4 international conference on metrology for archaeology and cultural heritage, MetroArchaeo, Florence. 2019. <a href="https://www.imeko.org/publications/tc4-Archaeo-2019/IMEKO-TC4-METROARCHAEO-2019-27.pdf">[PDF]</a></li>
+  <li>H. Zhou, K. Ni, Q. Zhou and T. Zhang, "An SfM Algorithm With Good Convergence That Addresses Outliers for Realizing Mono-SLAM," in IEEE Transactions on Industrial Informatics, vol. 12, no. 2, pp. 515-523, April 2016, doi: 10.1109/TII.2016.2518481. keywords: {Cameras;Simultaneous localization and mapping;Navigation;Linear programming;Robot vision systems;structure from motion;mono-SLAM;Monocular simultaneous localization and mapping (mono-SLAM);structure from motion (SfM)},</li>
+  <li>Szeliski, Richard. Computer Vision: Algorithms and Applications. Springer, 2010. 2nd Edition 2022.</li>
+  <li>Wilson, Kyle, and Noah Snavely. "Network principles for SfM: Disambiguating repeated structures with local context." Proceedings of the IEEE International Conference on Computer Vision. 2013.</li>
+  <li>Schönberger, Johannes Lutz, and Jan-Michael Frahm. "Structure-from-Motion Revisited." Conference on Computer Vision and Pattern Recognition (CVPR), 2016.</li>
+  <li>Schönberger, Johannes Lutz, et al. "Pixelwise View Selection for Unstructured Multi-View Stereo." European Conference on Computer Vision (ECCV), 2016.</li>
+</ol>
 <br><br>
 
 
