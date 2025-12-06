@@ -15,6 +15,7 @@ import argparse
 import pycolmap
 
 import dataset_loader
+from colmap import getIntrinsics, runColmap
 from colmap_loader import load_scene_colmap, ensure_colmap_model
 from point_cloud_viewer import PointCloudViewer
 from feature_extractor import FeatureExtractor
@@ -23,7 +24,7 @@ from image_data import ImageData
 from point_data import PointData
 from bundle_adjustment import runBundleAdjustment
 from evaluation import evaluateAccuracy
-from utils import estimatePose, triangulate, loadAllImages, reprojectionError, pointDepth, parallaxAngle, profile
+from utils import triangulate, triangulatePoint, loadAllImages, reprojectionError, pointDepth, parallaxAngle, profile
 
 class SfmData:
     def __init__(self):
@@ -137,53 +138,35 @@ class SfmData:
         self.matcher = matcher
 
     def genSIFTMatchPairs(self, img1, img2):
-        if img1 is None or img2 is None:
-            raise ValueError("img1 and img2 must be valid ImageData instances")
-
-        # Use Keypoints and Descriptors already found within img1 and img2 imgData class
-        kp1, des1 = img1.kp, img1.des
-        kp2, des2 = img2.kp, img2.des
-        if des1 is None or des2 is None:
-            raise ValueError("Descriptors missing. Ensure features are extracted before matching.")
-
-        i, j = img1.idx, img2.idx
+        i = img1.idx
+        j = img2.idx
         key = (min(i, j), max(i, j))
 
-        # Search for corresponding pairs of points
-        matches_12 = self.matcher.knnMatch(des1, des2, ratioVal=0.75)
-        matches_21 = self.matcher.knnMatch(des2, des1, ratioVal=0.75)
+        full, tentative, geo_inliers = self.matcher.match(img1, img2, self.K)
 
-        # Symmetric consistency check
-        mutual = []
-        for m in matches_12:
-            for m2 in matches_21:
-                if m.queryIdx == m2.trainIdx and m.trainIdx == m2.queryIdx:
-                    mutual.append(m)
-                    break
+        def keypointPairs(matches, swap):
+            if not swap:
+                return [(m.queryIdx, m.trainIdx) for m in matches]
+            else:
+                return [(m.trainIdx, m.queryIdx) for m in matches]
 
-        if len(mutual) < 8:
-            return np.empty((0,2)), np.empty((0,2)), [], kp1, kp2
-
-        matches = sorted(mutual, key=lambda m: m.distance)
-
-        # Here we are just trying to constrain tnat i<j
-        kp_pairs = []
-        if i < j:
-            kp_pairs = [(m.queryIdx, m.trainIdx) for m in matches]
-        else:
-            kp_pairs = [(m.trainIdx, m.queryIdx) for m in matches]
+        swap = (j < i)  # always ensure (i < j)
+        kp_pairs_full = keypointPairs(full, swap)
+        kp_pairs_tentative = keypointPairs(tentative, swap)
+        kp_pairs_inliers = keypointPairs(geo_inliers, swap)
 
         self.pairMatches[key] = {
-            "matches": matches,
-            "kp_pairs": kp_pairs
+            "full": full,
+            "tentative": tentative,
+            "inliers": geo_inliers,
+            "kp_pairs_full": kp_pairs_full,
+            "kp_pairs_tentative": kp_pairs_tentative,
+            "kp_pairs_inliers": kp_pairs_inliers,
         }
-        pts1 = np.float32([kp1[pair[0]].pt for pair in kp_pairs])
-        pts2 = np.float32([kp2[pair[1]].pt for pair in kp_pairs])
-
-        return pts1, pts2, matches, kp1, kp2
+        return self.pairMatches[key]
 
 # @profile
-def buildCorrespondences(sfm, new_img_idx, min_track_len=2):
+def buildCorrespondences(sfm, new_img_idx):
     """
     Build 2D-3D correspondences for a new image using existing 3D points.
       - look at matches between image k and new image
@@ -204,392 +187,208 @@ def buildCorrespondences(sfm, new_img_idx, min_track_len=2):
             continue
         key = (min(k, new_img_idx), max(k, new_img_idx))
         pm = sfm.pairMatches.get(key)
-        if not pm:
+        if pm is None:
             continue
 
-        kp_pairs = pm["kp_pairs"]
-        matches = pm["matches"]
+        kp_pairs_tent = pm["kp_pairs_tentative"]
+        for (kpA, kpB) in kp_pairs_tent:
+            if k < new_img_idx:
+                kp_k = kpA
+                kp_new = kpB
+            else:
+                kp_k = kpB
+                kp_new = kpA
 
-        good = [i for i,m in enumerate(matches) if m.distance < 55]
-        if not good:
-            continue
-
-        for gi in good:
-            kp_i, kp_j = kp_pairs[gi]
-            kp_idx_tri = kp_i if k < new_img_idx else kp_j
-            kp_idx_new = kp_j if k < new_img_idx else kp_i
-
-            if kp_idx_new in used_new_kps:
+            if kp_new in used_new_kps:
                 continue
-            used_new_kps.add(kp_idx_new)
+            used_new_kps.add(kp_new)
 
-            pt_id = sfm.kp_to_point.get((k, kp_idx_tri))
+            pt_id = sfm.kp_to_point.get((k, kp_k))
             if pt_id is None:
                 continue
 
             pt = sfm.getPoint(pt_id)
+            if pt is None or pt.coord is None:
+                continue
+
             obj_points.append(pt.coord)
-            img_points.append(new_img.kp[kp_idx_new].pt)
+            img_points.append(new_img.kp[kp_new].pt)
 
     if len(obj_points) == 0:
-        return np.empty((0, 3), np.float32), np.empty((0, 2), np.float32)
+        return (np.empty((0, 3), np.float32), np.empty((0, 2), np.float32))
 
-    return np.asarray(obj_points, np.float32), np.asarray(img_points, np.float32)
+    return (np.asarray(obj_points, np.float32), np.asarray(img_points, np.float32))
 
-def chooseNextImage(sfm, registered, failed_images, min_correspondences=6, alpha=0.7, beta=0.3):
+def chooseNextImage(sfm, registered, failed, min_correspondences=6, w_existing=0.65, w_new=0.25, w_geo=0.10):
     best_j = None
-    best_score = -1.0
-
+    best_score = -1
     for j, img_j in sfm.images.items():
-        if j in registered or j in failed_images:
-            continue
-        if img_j.des is None:
+        if j in registered or j in failed or img_j.des is None:
             continue
 
-        obj_pts = []
-        img_pts = []
-        used = set()
+        M_existing = 0
+        M_new = 0
+        M_geo = 0
 
-        for k in registered:
-            key = (min(k, j), max(k, j))
+        for i in registered:
+            key = (min(i, j), max(i, j))
             pm = sfm.pairMatches.get(key)
-            if not pm:
+            if pm is None:
                 continue
-
-            matches = pm["matches"]
-            kp_pairs = pm["kp_pairs"]
-
-            good = [idx for idx, m in enumerate(matches) if m.distance < 55]
-            if len(good) < 3:
-                continue
-
-            img_k = sfm.images[k]
-
-            for gi in good:
-                kp_k, kp_j = kp_pairs[gi]
-                if k > j:
-                    kp_k, kp_j = kp_j, kp_k
-
-                if kp_j in used:
-                    continue
-                used.add(kp_j)
-
-                pt_id = sfm.kp_to_point.get((k, kp_k))
-                if pt_id is None:
-                    continue
-
-                pt = sfm.getPoint(pt_id)
-                if pt is None or pt.coord is None:
-                    continue
-
-                obj_pts.append(pt.coord)
-                img_pts.append(img_j.kp[kp_j].pt)
-
-        obj_pts = np.asarray(obj_pts, np.float32)
-        img_pts = np.asarray(img_pts, np.float32)
-        M_existing = obj_pts.shape[0]
+            kp_tent = pm["kp_pairs_tentative"]
+            kp_geo  = pm["kp_pairs_inliers"]
+            M_geo += len(kp_geo)
+            for (a, b) in kp_tent:
+                kp_i, kp_j = (a, b) if i < j else (b, a)
+                if (i, kp_i) in sfm.kp_to_point:
+                    M_existing += 1 # existing observation
+                if (j, kp_j) not in sfm.kp_to_point:
+                    M_new += 1 # new structure
 
         if M_existing < min_correspondences:
             continue
 
-        M_new = 0
-        for k in registered:
-            key = (min(k, j), max(k, j))
-            pm = sfm.pairMatches.get(key)
-            if not pm:
-                continue
+        score = (w_existing * M_existing) + (w_new * M_new) + (w_geo * M_geo)
 
-            kp_pairs = pm["kp_pairs"]
-            for kp_k_idx, kp_j_idx in kp_pairs:
-                if k > j:
-                    kp_k_idx, kp_j_idx = kp_j_idx, kp_k_idx
-                if (j, kp_j_idx) not in sfm.kp_to_point:
-                    M_new += 1
-
-        score = alpha * float(M_existing) + beta * float(M_new)
-
+        # Track best image
         if score > best_score:
             best_score = score
             best_j = j
-
-    if best_j is None:
-        print("[WARN] No suitable next image found.")
-        return None
-
-    print(f"[INFO] Next image chosen: {best_j}  score={best_score:.1f}")
     return best_j
 
-def pickInitialPair(sfm, max_candidates=10, sample_points=200):
+def pickInitialPair(sfm):
     """
-    Choose a seed pair inside this component that provides good parallax.
-
-    Returns:
-        (i0, j0), match_count
+    Choose a seed pair based on geometric inliers.
     """
-    pairs = []
-    for i in sfm.images.keys():
-        for j in sfm.images.keys():
-            if i >= j:
-                continue
-            key = (min(i, j), max(i, j))
-            if key in sfm.pairMatches:
-                n_matches = len(sfm.pairMatches[key]["kp_pairs"])
-                if n_matches >= 20:
-                    pairs.append((i, j, n_matches))
-    if not pairs:
-        return (None, None), 0
-
-    pairs.sort(key=lambda x: x[2], reverse=True)
-    candidates = pairs[:max_candidates]
-
-    best_score = -1
     best_pair = None
-    best_match_count = 0
+    best_inliers = 0
 
-    for (i0, j0, n_matches) in candidates:
-        key = (min(i0, j0), max(i0, j0))
-        kp_pairs = sfm.pairMatches[key]["kp_pairs"]
-        total = len(kp_pairs)
-
-        if total > sample_points:
-            idx = np.random.choice(total, size=sample_points, replace=False)
-            sub_pairs = [kp_pairs[k] for k in idx]
-        else:
-            sub_pairs = kp_pairs
-
-        if len(sub_pairs) < 8:
-            continue
-
-        pts_i = np.float32([sfm.images[i0].kp[a].pt for a, b in sub_pairs])
-        pts_j = np.float32([sfm.images[j0].kp[b].pt for a, b in sub_pairs])
-
-        E, mask_E = cv.findEssentialMat(
-            pts_i, pts_j, sfm.K,
-            method=cv.RANSAC,
-            prob=0.999,
-            threshold=1.0
-        )
-        if mask_E is None:
-            continue
-
-        mask_E = mask_E.ravel().astype(bool)
-        pts_i = pts_i[mask_E]
-        pts_j = pts_j[mask_E]
-
-        # Need some inliers for usable geometry
-        if pts_i.shape[0] < 30:
-            continue
-
-        # Triangulate relative baseline only (R1=I, t1=[0])
-        _, R, t, _ = cv.recoverPose(E, pts_i, pts_j, sfm.K)
-        pts3d = triangulate(
-            pts_i, pts_j,
-            np.eye(3), np.zeros((3, 1)),
-            R, t,
-            sfm.K,
-            decimal_pts=2
-        )
-
-        # Skip if degenerate triangulation
-        if pts3d.shape[0] < 10:
-            continue
-
-        # Compute SVD of centered structure
-        Xc = pts3d - pts3d.mean(axis=0)
-        U, S, Vt = np.linalg.svd(Xc)
-
-        if S[0] <= 0:
-            continue
-
-        nonplanarity = S[2] / S[0]
-        if nonplanarity > best_score:
-            best_score = nonplanarity
-            best_pair = (i0, j0)
-            best_match_count = n_matches
+    for key, pm in sfm.pairMatches.items():
+        inliers = pm.get("kp_pairs_inliers", [])
+        n_inliers = len(inliers)
+        if n_inliers > best_inliers:
+            best_inliers = n_inliers
+            best_pair = key
 
     if best_pair is None:
-        i0, j0, best_match_count = pairs[0]
-        print("[WARN] Using fallback seed pair.")
-        return (i0, j0), best_match_count
+        return (None, None), 0
 
-    print(f"[INFO] Selected seed pair {best_pair} with parallax score {best_score:.4f}")
-    return best_pair, best_match_count
+    i0, j0 = best_pair
+    print(f"[INFO] Selected seed pair {best_pair} using {best_inliers} geometric inliers.")
+    return (i0, j0), best_inliers
 
 @profile
-def triangulateWithExistingCameras(sfm, new_idx, reproj_thresh=2.0):
-    new_img = sfm.getImage(new_idx)
-
-    for k, img_k in sfm.images.items():
-        if k == new_idx or not img_k.triangulated:
+def triangulateWithExistingCameras(sfm, new_idx, min_parallax_deg=2.0, reproj_thresh=1.0):
+    img_j = sfm.images[new_idx]
+    for i, img_i in sfm.images.items():
+        if i == new_idx or not img_i.triangulated:
             continue
-
-        key = (min(k, new_idx), max(k, new_idx))
+        if img_i.R is None or img_i.t is None or img_j.R is None or img_j.t is None:
+            continue
+        key = (min(i, new_idx), max(i, new_idx))
         pm = sfm.pairMatches.get(key)
-        if not pm:
+        if pm is None:
             continue
 
-        matches = pm["matches"]
-        kp_pairs = pm["kp_pairs"]
-
-        # Basic descriptor-quality filter
-        good = [i for i, m in enumerate(matches) if m.distance < 55.0]
-        if len(good) < 8:
-            continue
-
-        # Build raw 2D–2D arrays with correct index mapping
-        pts_k = []
-        pts_new = []
-        idx_k = []
-        idx_new = []
-
-        for gi in good:
-            kp_i, kp_j = kp_pairs[gi]
-
-            if k < new_idx:
-                # keypoint order in kp_pairs: (k, new_idx)
-                idx_k.append(kp_i)
-                idx_new.append(kp_j)
-                pts_k.append(img_k.kp[kp_i].pt)
-                pts_new.append(new_img.kp[kp_j].pt)
+        for (a, b) in pm["kp_pairs_tentative"]:
+            # Map a,b to the correct image indices
+            if i < new_idx:
+                kp_i = a
+                kp_j = b
             else:
-                # if ever used with reversed order, keep it consistent
-                idx_k.append(kp_j)
-                idx_new.append(kp_i)
-                pts_k.append(img_k.kp[kp_j].pt)
-                pts_new.append(new_img.kp[kp_i].pt)
+                kp_i = b
+                kp_j = a
 
-        pts_k = np.float32(pts_k)
-        pts_new = np.float32(pts_new)
-        idx_k = np.asarray(idx_k)
-        idx_new = np.asarray(idx_new)
-
-        if pts_k.shape[0] < 8:
-            continue
-
-        # filter with essential mat
-        E, mask_E = cv.findEssentialMat(
-            pts_k, pts_new, sfm.K,
-            method=cv.RANSAC, prob=0.999, threshold=1.0
-        )
-        if mask_E is None:
-            continue
-
-        mask_E = mask_E.ravel().astype(bool)
-        if mask_E.sum() < 8:
-            continue
-
-        pts_k_f = pts_k[mask_E]
-        pts_new_f = pts_new[mask_E]
-        idx_k_f = idx_k[mask_E]
-        idx_new_f = idx_new[mask_E]
-
-        # triangulate
-        pts3d = triangulate(
-            pts_k_f, pts_new_f,
-            img_k.R, img_k.t,
-            new_img.R, new_img.t,
-            sfm.K,
-            decimal_pts=2
-        )
-
-        # Per-point cheirality / parallax / reprojection checks
-        for X, kp_k, kp_new, u_k, u_new in zip(pts3d, idx_k_f, idx_new_f, pts_k_f, pts_new_f):
-            # cheirality
-            depth_k = pointDepth(img_k.R, img_k.t, X)
-            depth_new = pointDepth(new_img.R, new_img.t, X)
-            if depth_k <= 0 or depth_new <= 0:
+            # if both observations are already in tracks, skip
+            already_i = (i, kp_i) in sfm.kp_to_point
+            already_j = (new_idx, kp_j) in sfm.kp_to_point
+            if already_i and already_j:
                 continue
 
-            # parallax
-            angle = parallaxAngle(img_k.R, img_k.t, new_img.R, new_img.t, X)
-            if angle < 1.0:   # in degrees; you can tune to 0.5 or 1.5 if needed
+            u_i = img_i.kp[kp_i].pt
+            u_j = img_j.kp[kp_j].pt
+
+            X = triangulatePoint(u_i, u_j,
+                                 img_i.R, img_i.t,
+                                 img_j.R, img_j.t,
+                                 sfm.K)
+
+            # Cheirality
+            depth_i = pointDepth(img_i.R, img_i.t, X)
+            depth_j = pointDepth(img_j.R, img_j.t, X)
+            if depth_i <= 0 or depth_j <= 0:
                 continue
 
-            # reprojection
-            if (reprojectionError(sfm.K, img_k.R, img_k.t, X, u_k) > reproj_thresh or
-                reprojectionError(sfm.K, new_img.R, new_img.t, X, u_new) > reproj_thresh):
+            # Parallax
+            par = parallaxAngle(img_i.R, img_i.t, img_j.R, img_j.t, X)
+            if par < min_parallax_deg:
                 continue
 
-            # Merge with existing point if any
-            pt_id = (sfm.kp_to_point.get((k, kp_k)) or
-                     sfm.kp_to_point.get((new_idx, kp_new)))
-            if pt_id is not None:
-                pt = sfm.getPoint(pt_id)
-                if pt is not None:
-                    pt.addCorrespondence(new_idx, kp_new, sfm)
+            # Reprojection
+            err_i = reprojectionError(sfm.K, img_i.R, img_i.t, X, u_i)
+            err_j = reprojectionError(sfm.K, img_j.R, img_j.t, X, u_j)
+            if err_i > reproj_thresh or err_j > reproj_thresh:
                 continue
 
-            sfm.addPoint(X, k, kp_k, new_idx, kp_new)
+            # Merge
+            existing_pt_id = sfm.kp_to_point.get((i, kp_i)) or sfm.kp_to_point.get((new_idx, kp_j))
+            if existing_pt_id is not None:
+                pt = sfm.getPoint(existing_pt_id)
+                if pt is not None and not already_j:
+                    pt.addCorrespondence(new_idx, kp_j, sfm)
+                continue
 
-def getIntrinsics(model, params):
-    """
-    We don't account for distortion in our pipeline, so if "RADIAL" or "SIMPLE_RADIAL" is detected,
-    we will just try treating it as pinhole.
-    """
-    if model == "SIMPLE_PINHOLE":
-        f, cx, cy = params
-        K = np.array([
-            [f, 0, cx],
-            [0, f, cy],
-            [0, 0, 1]
-        ])
+            sfm.addPoint(X, i, kp_i, new_idx, kp_j)
 
-    elif model == "PINHOLE":
-        fx, fy, cx, cy = params
-        K = np.array([
-            [fx, 0, cx],
-            [0, fy, cy],
-            [0, 0, 1]
-        ])
+def estimateInitialRelPose(sfm, i, j):
+    key = (min(i, j), max(i, j))
+    pm = sfm.pairMatches.get(key)
 
-    elif model == "SIMPLE_RADIAL":
-        f, cx, cy, k1 = params
-        K = np.array([
-            [f, 0, cx],
-            [0, f, cy],
-            [0, 0, 1]
-        ])
+    inlier_pairs = pm["kp_pairs_inliers"]
+    if len(inlier_pairs) < 8:
+        return None, None, None
 
-    elif model == "RADIAL":
-        f, cx, cy, k1, k2 = params
-        K = np.array([
-            [f, 0, cx],
-            [0, f, cy],
-            [0, 0, 1]
-        ])
-    else:
-        raise NotImplementedError(f"Camera model {model} not handled.")
-    return K
+    imgA = sfm.images[i]
+    imgB = sfm.images[j]
+
+    ptsA = np.float32([imgA.kp[a].pt for (a, b) in inlier_pairs])
+    ptsB = np.float32([imgB.kp[b].pt for (a, b) in inlier_pairs])
+
+    E, _ = cv.findEssentialMat(
+        ptsA, ptsB, sfm.K,
+        method=cv.RANSAC,
+        prob=0.999,
+        threshold=1.0
+    )
+
+    if E is None:
+        return None, None, None
+
+    _, R, t, _ = cv.recoverPose(E, ptsA, ptsB, sfm.K)
+
+    imgB.setPose(R, t)
+    return R, t, inlier_pairs
+
+def triangulateInitialPoints(sfm, i, j, R, t):
+    img_i = sfm.getImage(i)
+    img_j = sfm.getImage(j)
+    img_i.setPose(np.eye(3, dtype=np.float32), np.zeros((3,1), dtype=np.float32))
+
+    key = (min(i, j), max(i, j))
+    pm = sfm.pairMatches[key]
+
+    for (a, b) in pm["kp_pairs_inliers"]:
+        ptA = np.float32(img_i.kp[a].pt)
+        ptB = np.float32(img_j.kp[b].pt)
+
+        X = triangulatePoint(ptA, ptB, img_i.R, img_i.t, R, t, sfm.K)
+        sfm.addPoint(X, i, a, j, b)
+
+    img_i.triangulated = True
+    img_j.triangulated = True
 
 @profile
-def runColmap(images_dir, workspace):
-    os.makedirs(workspace, exist_ok=True)
-
-    database_path = os.path.join(workspace, "database.db")
-    sparse_dir = os.path.join(workspace, "sparse")
-    os.makedirs(sparse_dir, exist_ok=True)
-
-    pycolmap.extract_features(
-        database_path=database_path,
-        image_path=images_dir,
-    )
-
-    pycolmap.match_exhaustive(
-        database_path=database_path,
-    )
-
-    maps = pycolmap.incremental_mapping(
-        database_path=database_path,
-        image_path=images_dir,
-        output_path=sparse_dir,
-    )
-    if maps:
-        maps[0].write(sparse_dir)
-
-    return pycolmap.Reconstruction(sparse_dir)
-
-@profile
-def sfmRun(dataset, viewer):
+def sfmRun(dataset, viewer, matcher="BF"):
     """
     Assumptions:
         - Calibrated SfM (no fundamental matrix needed, directly calculate essential matrix with intrinsics)
@@ -599,11 +398,11 @@ def sfmRun(dataset, viewer):
     colmap = runColmap(dataset.image_dir, dataset.colmap_dir)
     if dataset.K is None:
         cam = next(iter(colmap.cameras.values()))
-        dataset.K = getIntrinsics(cam.model, cam.params)
+        dataset.K = getIntrinsics(cam.model.name, cam.params)
 
     sfm = SfmData()
     sfm.setExtractor(FeatureExtractor("SIFT", nfeatures=10000, contrastThreshold=0.03))
-    sfm.setMatcher(matcher = FeatureMatcher("BF", norm=cv.NORM_L2, crossCheck=False))
+    sfm.setMatcher(FeatureMatcher(matcher, ratio=0.75))
     sfm.setCameraIntrinsics(dataset.K)
 
     # ==========================================================
@@ -638,8 +437,8 @@ def sfmRun(dataset, viewer):
             if img_i.des is None or img_j.des is None:
                 print(f"[WARN] Skipping pair ({i},{j}) due to missing descriptors")
                 continue
-            pts1, pts2, pair_matches, kp1, kp2 = sfm.genSIFTMatchPairs(img_i, img_j)
-            print(f"Matched pair ({i}, {j}): {len(pair_matches)} matches")
+            pm = sfm.genSIFTMatchPairs(img_i, img_j)
+            print(f"[INFO] Matched pair ({i}, {j}): {len(pm["kp_pairs_tentative"])} tentative matches, {len(pm["kp_pairs_inliers"])} geometrically consistent")
 
     # ==========================================================
     # 3. Iterative triangulation and addition to point cloud
@@ -650,44 +449,9 @@ def sfmRun(dataset, viewer):
 
     print(f"[INFO] Global seed pair ({i0}, {j0}) with {n_matches} matches")
 
-    img_i = sfm.getImage(i0)
-    img_j = sfm.getImage(j0)
-
-    img_i.setPose(np.eye(3, dtype=np.float32), np.zeros((3, 1), dtype=np.float32))
-    img_i.triangulated = True
-
-    # Load symmetric matches for (i0, j0)
-    key = (min(i0, j0), max(i0, j0))
-    entry = sfm.pairMatches[key]
-    best_matches = entry["kp_pairs"]
-
-    pts_i = np.float32([sfm.images[i0].kp[kp_i].pt for kp_i, kp_j in best_matches])
-    pts_j = np.float32([sfm.images[j0].kp[kp_j].pt for kp_i, kp_j in best_matches])
-
-    E, mask_E = cv.findEssentialMat(
-        pts_i, pts_j, sfm.K,
-        method=cv.RANSAC,
-        prob=0.999,
-        threshold=1.0
-    )
-    mask_E = mask_E.ravel().astype(bool)
-
-    pts_i = pts_i[mask_E]
-    pts_j = pts_j[mask_E]
-    inlier_pairs = [p for p, m in zip(best_matches, mask_E) if m]
-
-    R_ij, t_ij, _ = estimatePose(pts_i, pts_j, E, sfm.K)
-
-    img_j.setPose(R_ij, t_ij)
-    img_j.triangulated = True
-
-    pt_cloud = triangulate(pts_i, pts_j,
-                           img_i.R, img_i.t,
-                           img_j.R, img_j.t,
-                           sfm.K)
-
-    for (X, (kp_i, kp_j)) in zip(pt_cloud, inlier_pairs):
-        sfm.addPoint(X, i0, kp_i, j0, kp_j)
+    # esetimate first relative pose + then triangulate
+    R_ij, t_ij, inlier_pairs = estimateInitialRelPose(sfm, i0, j0)
+    triangulateInitialPoints(sfm, i0, j0, R_ij, t_ij)
 
     viewer.updateCameraPoses(sfm.getCameraData())
     viewer.updatePoints(*sfm.getPointCloud())
@@ -695,7 +459,7 @@ def sfmRun(dataset, viewer):
     registered = {i0, j0}
     failed_images = set()
     triangulatedCount = 2
-
+    print(f"[INFO] Starting incremental reconstruction with {len(sfm.images)} images.")
     while True:
         next_idx = chooseNextImage(sfm, registered, failed_images)
         if next_idx is None:
@@ -705,7 +469,7 @@ def sfmRun(dataset, viewer):
         img_j = sfm.getImage(next_idx)
 
         obj_points, img_points = buildCorrespondences(sfm, next_idx)
-        if obj_points.shape[0] < 6:
+        if obj_points.shape[0] < 12:
             print(f"[WARN] Not enough 2D–3D matches for image {next_idx}")
             failed_images.add(next_idx)
             continue
@@ -717,12 +481,18 @@ def sfmRun(dataset, viewer):
             None,
             flags=cv.SOLVEPNP_ITERATIVE,
             iterationsCount=200,
-            reprojectionError=4.0,
+            reprojectionError=0.003 * max(dataset.im_height, dataset.im_width),
             confidence=0.999
         )
 
-        if (not success) or inliers_pnp is None or len(inliers_pnp) < 6:
+        if (not success) or inliers_pnp is None or len(inliers_pnp) < 8:
             print(f"[WARN] PnP failed for image {next_idx}")
+            failed_images.add(next_idx)
+            continue
+
+        inlier_ratio = len(inliers_pnp) / len(obj_points)
+        if inlier_ratio < 0.25:
+            print(f"[WARN] Low PnP inlier ratio ({inlier_ratio:.2f}) for image {next_idx}")
             failed_images.add(next_idx)
             continue
 
@@ -732,17 +502,25 @@ def sfmRun(dataset, viewer):
         registered.add(next_idx)
         triangulatedCount += 1
 
+        print(f"[INFO] Image {next_idx} registered with {len(inliers_pnp)} PnP inliers.")
+
         triangulateWithExistingCameras(sfm, next_idx)
+
         if triangulatedCount >= 4 and triangulatedCount % 3 == 0:
-            runBundleAdjustment(sfm, min_points=50, verbose=0)
+            print("[INFO] Running bundle adjustment...")
+            runBundleAdjustment(sfm, min_points=30, verbose=0)
 
         viewer.updatePoints(*sfm.getPointCloud())
         viewer.updateCameraPoses(sfm.getCameraData())
 
-    print("[INFO] Point cloud construction completed.")
+    if triangulatedCount >= 5:
+        print("[INFO] Running final bundle adjustment...")
+        runBundleAdjustment(sfm, min_points=30, verbose=0)
 
+    print(f"[INFO] Point cloud construction completed with {triangulatedCount} cameras registered.")
     print("\n[INFO] Running final evaluation vs GT...")
     metrics = evaluateAccuracy(sfm, colmap)
+    # TODO: make print more clean? or even write to csv for easier evaluation/plot generation?
     print(" POSE ERRORS:", metrics["pose_errors"])
     print(" POINT CLOUD ERRORS:", metrics["pc_errors"])
 
@@ -753,6 +531,23 @@ def sfmRun(dataset, viewer):
     #         print(f"  seen in image {img_idx}, keypoint {kp_idx}")
     # for (img_idx, kp_idx), pt_id in sfm.kp_to_point.items():
     #     print(f"Image {img_idx}, keypoint {kp_idx} -> Point {pt_id}, 3D = {sfm.pts[pt_id].coord}")
+
+def askUserForFeatureMatcher():
+    options = ["BF", "FLANN"]
+    print("\nSelect feature matcher:")
+    for idx, name in enumerate(options):
+        print(f"  {idx}: {name}")
+    while True:
+        user_in = input("Enter matcher number (default = BF): ").strip()
+        if user_in == "":
+            print("-> Using default matcher: BF")
+            return "BF"
+        if user_in.isdigit():
+            idx = int(user_in)
+            if 0 <= idx < len(options):
+                print(f"-> Selected matcher: {options[idx]}")
+                return options[idx]
+        print("[ERROR] Invalid selection. Please try again.\n")
 
 if __name__ == "__main__":
     project_root = Path(__file__).resolve().parent.parent
@@ -768,7 +563,7 @@ if __name__ == "__main__":
         dataset = dataset_loader.select_dataset(dataset_dir)
     else:
         dataset = dataset_loader.DatasetInfo(dataset_path, focal_length=False, from_cli=False)
-
-    viewer = PointCloudViewer("SfM Point Cloud")
-    threading.Thread(target=sfmRun, args=(dataset, viewer), daemon=True).start()
+    matcher = askUserForFeatureMatcher()
+    viewer = PointCloudViewer(f"SfM (scene: {os.path.basename(os.path.normpath(dataset.scene_dir))}, matcher: {matcher})")
+    threading.Thread(target=sfmRun, args=(dataset, viewer, matcher), daemon=True).start()
     viewer.run()
