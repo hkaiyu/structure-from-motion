@@ -56,6 +56,16 @@ def triangulate(pts1, pts2, R1, t1, R2, t2, K, decimal_pts=2):
     pts_3d = np.round(pts_3d, decimals=decimal_pts)
     return pts_3d
 
+# per-point variant of triangulate()
+def triangulatePoint(pt1, pt2, R1, t1, R2, t2, K):
+    P1 = (K @ np.hstack((R1, t1))).astype(np.float32)
+    P2 = (K @ np.hstack((R2, t2))).astype(np.float32)
+    pt1 = np.array(pt1, dtype=np.float32).reshape(2, 1)
+    pt2 = np.array(pt2, dtype=np.float32).reshape(2, 1)
+    X_h = cv.triangulatePoints(P1, P2, pt1, pt2)
+    X = (X_h[:3] / X_h[3]).reshape(3)
+    return X.astype(np.float32)
+
 def projectPoint(K, R, t, X):
     X_cam = R @ X.reshape(3, 1) + t
     x = K @ X_cam

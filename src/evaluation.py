@@ -129,7 +129,6 @@ def evaluateAccuracy(sfm, rec_gt):
         trans_errors.append(float(np.linalg.norm(C_gt - C_est_aligned)))
 
         # To align rotations: world is rotated by R_sim, so camera rotations transform as:
-        # R_est_aligned = R_est * R_sim^T
         R_est_aligned = R_est @ R_sim.T
 
         # Relative rotation: R_rel = R_gt * R_est_aligned^T
