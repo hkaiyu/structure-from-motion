@@ -40,8 +40,6 @@ color: #FF9900;
 <span style="font-size: 18px; line-height: 1.5em;">Virginia Tech</span>
 <hr>
 
-<img src="sfm2.png">
-
 <!-- Abstract -->
 <h3> Abstract </h3>
 The Structure From Motion (SfM) problem in computer vision is an algorithm for recovering the three-dimensional 
@@ -84,9 +82,26 @@ their reprojection errors, which can stem from being outliers in the set of reco
 
 <br><br>
 
+When interacting with the SfM algorithm, there are a few common technical challenges that 
+have been encountered in the literature.  One of the first challenges is from correspondence 
+and feature matching. Correspondence and Feature Matching Failures due to repetitive structures 
+from patterns such as identical man-made environments, or similar natural structures such as 
+trees or hills, can cause keypoint ambiguity[15].  These false matches may cause the SfM algorithm 
+to misinterpret and introduce errors when new images are iteratively added to the 3D reconstruction 
+dataset. Another common technical challenge is optimization and drift.  Errors in camera pose 
+estimation build up over time and cause an accumulation of bias 'drift' in the final solution 
+[13]. Given a poor initialization of the SfM algorithm,  Bundle adjustment, which is a non-linear 
+optimization problem, will fail to converge to the global minimum and get stuck in a local minimum.  
+Another common challenge comes from any introductions of dynamic elements into the scene. By its 
+very nature, the SfM algorithm depends upon a static scene.  Any moving elements such as moving 
+cars, pedestrians, or even swaying trees in a scene can cause an outlier match to be introduced 
+which can corrupt the camera motion estimation [14].
 
-<p style="text-align: center;">Teaser Figure.</p>
-<img src="teaser.jpg">
+<br<br>
+
+<p style="text-align: center;">Teaser Figure:</p>
+<!--TODO: add teaser gif to file structure-->
+<img src="teaser.gif">
 
 <!-- Approach -->
 <h3> Approach </h3>
@@ -151,6 +166,8 @@ and add these calculated 3D points to our point cloud.  (TODO: Talk about PNP an
   <li>Wilson, Kyle, and Noah Snavely. "Network principles for SfM: Disambiguating repeated structures with local context." Proceedings of the IEEE International Conference on Computer Vision. 2013.</li>
   <li>Schönberger, Johannes Lutz, and Jan-Michael Frahm. "Structure-from-Motion Revisited." Conference on Computer Vision and Pattern Recognition (CVPR), 2016.</li>
   <li>Schönberger, Johannes Lutz, et al. "Pixelwise View Selection for Unstructured Multi-View Stereo." European Conference on Computer Vision (ECCV), 2016.</li>
+  <li>Kanazawa, Sotaro, et al. "User-Guided Correction of Reconstruction Errors in Structure-from-Motion." Proceedings of the 30th International Conference on Intelligent User Interfaces. 2025.</li>
+  <li>Umeyama, S. (1991). "Least-squares estimation of transformation parameters between two point patterns". IEEE Transactions on Pattern Analysis and Machine Intelligence. 13 (4): 376–380. <a href="https://ieeexplore.ieee.org/document/88573">doi:10.1109/34.88573.</a></li>
 </ol>
 <br><br>
 

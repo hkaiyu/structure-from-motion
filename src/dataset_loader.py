@@ -60,9 +60,9 @@ KNOWN_DATASETS = {
     "erik/erik_7": {"focal_length": 2466.74},
     "erik/erik_8": {"focal_length": 2466.74},
     "erik/erik_9": {"focal_length": 2466.74},
-    "misc/colosseum": {"focal_length": 4838.4},
-    "misc/colosseum_rotated": {"focal_length": 4838.4},
-    "misc/trevi": {"focal_length": 4838.4},
+    #"misc/colosseum": {"focal_length": 4838.4},
+    #"misc/colosseum_rotated": {"focal_length": 4838.4},
+    #"misc/trevi": {"focal_length": 4838.4},
 }
 
 def select_dataset(datasets_path):
