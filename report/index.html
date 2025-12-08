@@ -37,112 +37,347 @@ color: #FF9900;
 <h1>Structure from Motion</h1> 
 <span style="font-size: 20px; line-height: 1.5em;"><strong>Kaiyu Hernandez, Jordan Daugherty, & Sanil Hira</strong></span><br>
 <span style="font-size: 18px; line-height: 1.5em;">Fall 2025 ECE 4554/5554 Computer Vision: Course Project</span><br>
-<span style="font-size: 18px; line-height: 1.5em;">Virginia Tech</span>
+<span style="font-size: 18px; line-height: 1.5em;">Virginia Tech</span><br>
+<span style="font-size: 18px; line-height: 1.5em;"><a href="https://github.com/hkaiyu/structure-from-motion">GitHub Repo</a></span><br>
+<span style="font-size: 18px; line-height: 1.5em;"><a href="https://docs.google.com/document/d/1pp_HKxKHnC4nlGB1E_5OzplNEOorp5W1wgPPgkErA_E/edit?usp=sharing">Google Doc Report</a></span><br>
 <hr>
 
+<img src="media/sfm2.png">
+
+<br><br>
 <!-- Abstract -->
 <h3> Abstract </h3>
-The Structure From Motion (SfM) problem in computer vision is an algorithm for recovering the three-dimensional 
-structure of fixed structures utilizing a collection of two-dimensional images.  In this report, a survey on the 
-performance of the SfM algorithm is conducted by conducting testing on different image datasets to identify common 
-challenges present in the discipline.
+The Structure From Motion (SfM) problem in computer vision is an algorithm for recovering the three-dimensional structure of 
+fixed structures utilizing a collection of two-dimensional images.  In this report, a survey on the performance of the 
+SfM algorithm is conducted by conducting testing on different image datasets to identify common challenges present in the 
+discipline. An example of SfM can be seen in Figure 1.
 <br><br>
 
-Structure from Motion has been used for applications such as photogrammetry, robotics, or 
-augmented reality. For the surveying of land or structures, SfM photogrammetry proves as a 
-cost-effective alternative to LIDAR sensor based ranging [3].  However, SfM photogrammetry is 
-not without its drawbacks. Some challenges include requiring good lighting/weather conditions, 
-and Ground Control points for accurate georeferencing. For robotics navigation, the SfM algorithm's 
-bundle adjustment approach can help provide convergence for the monocular case of Simultaneous 
-Localization and Mapping (SLAM) [10].
+<p style="text-align: center;">Teaser Figure:</p>
+<figure>
+  <img src="media/gifs/erik4.gif">
+  <figcaption>Figure 1: Example of our SfM Algorithm providing a reconstruction of a statue</figcaption>
+</figure>
+
+<br>
+<!-- Introduction -->
+<h3> Introduction </h3>
+
+The primary goal of the Structure from Motion (SfM) algorithm is to reconstruct a 3-dimensional structure of a scene given a 
+dataset of 2-dimensional images.  The SfM problem can be seen as an extension to stereovision because it extends the concept 
+of reconstructing 3-D points from 2-D points. 
+<br><br>
+Structure from Motion has been used for applications such as photogrammetry, robotics, or augmented reality. For the surveying 
+of land or structures, SfM photogrammetry proves as a cost-effective alternative to LIDAR sensor based ranging [3].  However, 
+SfM photogrammetry is not without its drawbacks. Some challenges include requiring good lighting/weather conditions, and Ground 
+Control points for accurate georeferencing. For robotics navigation, the SfM algorithm's bundle adjustment approach can help 
+provide convergence for the monocular case of Simultaneous Localization and Mapping (SLAM) [10].
+
 The SfM algorithm can be briefly split into the following steps:
 <ol>
-  <li>Feature Extraction, </li>
+  <li>Feature Extraction </li>
   <li>Feature Matching</li>
   <li>3-D reconstruction</li>
   <li>Bundle Adjustment</li>
   <li>Meshing and texturing from the point cloud</li>
 </ol>
-Feature extraction is applied to each image 
-within the dataset using a Keypoint detection algorithm such as SIFT or ORB.  Feature matching 
-is performed to provide correspondence of matching keypoints between each image in the dataset. 
-Using the matches between images and the known intrinsic parameters of the camera, Random Sample 
-Consensus (RANSAC) is used to filter outliers in computing the essential matrix, a homographic 
-mapping that would maximize as many inliers matches as possible for use in plotting the 3-D point 
-cloud. This essential matrix can then be used to estimate the relative camera pose for each image, 
-as well as to perform triangulation, computing the position of the 3-D points from the 
-corresponding keypoints in the image. Triangulation introduces reprojection errors when 
-any back-projected rays do not intersect.  These errors in the 3-D point positions can be 
-due to measurement noise or any keypoints that may not have been mapped quite correctly through 
-the RANSAC algorithm.  The Bundle Adjustment step directly addresses the reprojection error.  
-Bundle adjustment is an optimization problem, which focuses on minimizing the sum of squared 
-reprojection errors of the projection of the computed 3D points and their multi-view original 
-image points.  Bundle adjustment also serves to filter out any inconsistent 3D points based on 
-their reprojection errors, which can stem from being outliers in the set of reconstructed points. 
+ Feature extraction is applied to each image within the dataset using a Keypoint detection algorithm such as SIFT or ORB.  
+ Feature matching is performed to provide correspondence of matching keypoints between each image in the dataset. Using the 
+ matches between images and the known intrinsic parameters of the camera, Random Sample Consensus (RANSAC) is used to filter 
+ outliers in computing the essential matrix, a homographic mapping that would maximize as many inliers matches as possible for 
+ use in plotting the 3-D point cloud. This essential matrix can then be used to estimate the relative camera pose for each image, 
+ as well as to perform triangulation, computing the position of the 3-D points from the corresponding keypoints in the image. 
+ Triangulation introduces reprojection errors when any back-projected rays do not intersect.  These errors in the 3-D point 
+ positions can be due to measurement noise or any keypoints that may not have been mapped quite correctly through the RANSAC 
+ algorithm.  The Bundle Adjustment step directly addresses the reprojection error.  Bundle adjustment is an optimization problem, 
+ which focuses on minimizing the sum of squared reprojection errors of the projection of the computed 3D points and their 
+ multi-view original image points.  Bundle adjustment also serves to filter out any inconsistent 3D points based on their 
+ reprojection errors, which can stem from being outliers in the set of reconstructed points. 
 
 <br><br>
 
-When interacting with the SfM algorithm, there are a few common technical challenges that 
-have been encountered in the literature.  One of the first challenges is from correspondence 
-and feature matching. Correspondence and Feature Matching Failures due to repetitive structures 
-from patterns such as identical man-made environments, or similar natural structures such as 
-trees or hills, can cause keypoint ambiguity[15].  These false matches may cause the SfM algorithm 
-to misinterpret and introduce errors when new images are iteratively added to the 3D reconstruction 
-dataset. Another common technical challenge is optimization and drift.  Errors in camera pose 
-estimation build up over time and cause an accumulation of bias 'drift' in the final solution 
-[13]. Given a poor initialization of the SfM algorithm,  Bundle adjustment, which is a non-linear 
-optimization problem, will fail to converge to the global minimum and get stuck in a local minimum.  
-Another common challenge comes from any introductions of dynamic elements into the scene. By its 
-very nature, the SfM algorithm depends upon a static scene.  Any moving elements such as moving 
-cars, pedestrians, or even swaying trees in a scene can cause an outlier match to be introduced 
-which can corrupt the camera motion estimation [14].
+When interacting with the SfM algorithm, there are a few common technical challenges that have been encountered in the literature. 
+One of the first challenges is from correspondence and feature matching. Correspondence and Feature Matching Failures due to repetitive 
+structures from patterns such as identical man-made environments, or similar natural structures such as trees or hills, can cause keypoint 
+ambiguity[15].  These false matches may cause the SfM algorithm to misinterpret and introduce errors when new images are iteratively added 
+to the 3D reconstruction dataset. Another common technical challenge is optimization and drift.  Errors in camera pose estimation build up 
+over time and cause an accumulation of bias 'drift' in the final solution [13]. Given a poor initialization of the SfM algorithm, Bundle 
+adjustment, which is a non-linear optimization problem, will fail to converge to the global minimum and get stuck in a local minimum. 
+Another common challenge comes from any introductions of dynamic elements into the scene. By its very nature, the SfM algorithm depends 
+upon a static scene.  Any moving elements such as moving cars, pedestrians, or even swaying trees in a scene can cause an outlier match 
+to be introduced which can corrupt the camera motion estimation [14].
 
-<br<br>
-
-<p style="text-align: center;">Teaser Figure:</p>
-<!--TODO: add teaser gif to file structure-->
-<img src="teaser.gif">
+<br><br>
 
 <!-- Approach -->
 <h3> Approach </h3>
-For our approach, we focus on the implementation of the classical approach of the SfM 
-algorithm. We generated our code utilizing Python to take advantage of available Computer 
-Vision libraries such as OpenCV.  For visualization of the point cloud structure, we 
-utilize PyQt5 and VisPy libraries to implement our simulation.  As the SfM algorithm 
-recursively iterates through unregistered images of the dataset, new observation points 
-are added to the reconstructed point cloud structure.  Users are able to add their own 
-datasets into the project folder to test their own scenes/structures.  Currently, we 
-include some datasets that are focused on a singular structure, and pan the scene 
-sequentially [4].  Additionally, we include datasets from ETH3D Stereo Benchmarks 
-that include ground truth geometry collected utilizing a high-precision laser scanner [6].
-<br><br>
+For our approach, we focus on the implementation of the classical approach of the SfM algorithm. Our SfM system is written entirely in 
+Python. Most of the core reconstruction logic is implemented from scratch using NumPy and OpenCV for efficient mathematical computations. 
+We utilize VisPy and PyQt5 to implement the 3D interactive visualization. To validate our results, we integrate COLMAP (via pycolmap bindings) 
+to use as a baseline for the results.  Instructions on how to run our program are provided in Appendix B.
+<br>
 
-To use our SfM code, we run our 'main.py' file. The only argument that needs to be passed 
-is the directory of a dataset to use, and the CLI will prompt for the focal length of the 
-camera used. If the directory is left blank, there is a CLI selector to choose from datasets 
-that we have pre-loaded. The bulk of our algorithm is found in the “sfmRun” section of the 
-same main file. It starts by initializing our data structure which will store the images in 
-our dataset, 3D points in our point cloud, the camera intrinsic matrix, our feature matcher 
-and extractor, and a mapping from an image to its corresponding 3D points, and from a 3D point 
-to any image involved in its triangulation. While loading all images, we also compute their 
-keypoints and descriptors using SIFT. (TODO: If we change what feature detector we use make 
-sure we update here) Next, we compute feature matched pairs between our images - as a performance
-optimization, we only do this for images that are within a nearby window, rather than for all 
-combinational pairs of images. We choose the image pair with the most number of matches as our 
-seed pair. Using OpenCV, we apply RANSAC to calculate the essential matrix with the feature 
-matches and known camera intrinsics. Our first iteration will set the camera pose for the first 
-image as the origin, and then use our inlier matches to estimate the pose of the second image's 
-camera. Following iterations will use the second image and a new image, and are able to estimate 
-the new image's camera pose using the already calculated camera pose of the previous image and 
-their feature matches. With the camera poses of each image, we triangulate the inlier keypoints 
-and add these calculated 3D points to our point cloud.  (TODO: Talk about PNP and Bundle Adjustment)
+<h4> Feature Extraction and Matching </h4>
+Our pipeline begins with feature extraction and matching. First, we extract local features from each image using SIFT, which are then fed 
+into the feature matcher. The matching algorithm is configurable, and can be either set to OpenCV’s BF (brute force) or FLANN implementations. 
+Once we have obtained our matches, we utilize three types of filters on these matches: Lowe’s ratio test, mutual cross-check filter, and 
+geometric inlier filtering via the essential matrix. 
+<br>
 
-<h3>Experimentation and Metrics</h3>
+<h4> Initial Pair Selection and Triangulation </h4>
+Iterative SfM works by incrementally registering images and triangulating with previous images, but to initialize this process, 
+we first have to pick a pair of images. We select this pair by picking the pair of images with the highest number of geometric 
+inliers (obtained through the essential matrix estimated between each image). The first camera dictates the world coordinate orientation 
+for all remaining cameras. We then triangulate the geometric inliers for this pair and that produces our initial set of 3D points.
+<br>
+
+<h4> Next Image Selection </h4>
+After we have initialized the reconstruction, we also need to have a way of figuring out how to find the next best image to register. We utilize a scoring heuristic for this, 
+which is based off of three different collected metrics:
+<ol>
+  <li>The number of 3D points that the image observes (metric for how much coverage the image has) </li>
+  <li>The number of 3D points that the image could add that are not part of our current 3D points (metric for how much “structure” can be added by incorporating it)</li>
+  <li>The number of geometric inliers (to ensure geometric consistency)</li>
+</ol>
+We perform a weighted score over these metrics to determine a score for each image. In particular, for each of the above metrics, we use weights of 0.65, 0.25, and 0.10, respectively. 
+The image with the highest score that is not yet registered is the next image selected.
+<br>
+
+<h4> Camera Pose Estimation and Triangulation </h4>
+Right before triangulation, we must estimate the camera pose of the newly selected image using OpenCV's RANSAC-based PnP solver. Once this pose is calculated, we can triangulate 
+the matches between the newly selected image and all previously registered images. The points that result from this triangulation are then further filtered. We mainly employ three 
+checks: a cheirality check (ensures point is not behind either camera), a parallax angle threshold, and reprojection error threshold. If a point passes all checks, it is added to the point cloud.
+<br>
+
+<h4> Bundle Adjustment </h4>
+SfM reprojection error can easily drift as the pipeline performs each iteration. Since each camera registration and triangulation adds some amount of error, these 
+accumulate on top of each other. To counteract this, we have a bundle adjustment (BA) step which runs every three camera registrations (after at least five cameras 
+have been registered). The goal of BA is to minimize the total reprojection error across all observations up to that point. This updates both camera poses and 3D 
+points, so that the point cloud can continue a stable growth.
+<br>
+
+<h4> Point Pruning </h4>
+Even with the filtering mentioned so far, outliers can still occur during the reconstruction, which will skew BA if we leave them. To prevent them from corrupting the BA step, 
+we perform a point pruning step at the end of each iteration. There are two types of pruning we do:
+
+<ol>
+  <li>Reprojection error pruning: we remove any point with reprojection error greater than 2px. This step is exactly like the reprojection error filtering step in triangulation, 
+    but we apply this after BA too since some points may get worse reprojection error after BA. </li>
+  <li>Spatial outlier pruning: we remove any point that is further than five standard deviations from the centroid of the point cloud. </li>
+</ol>
+<br>
+
+<h3>Experimentation and Results </h3>
+To better understand and exemplify some of the technical challenges that are present for the SfM algorithm, an effort has been made to present the results for 
+different image datasets that best illustrate them.  We borrow from the work of Schönberger, Lutz, and Frahm, utilizing their SfM software called COLMAP [11, 12].  
+When our SfM application is run, the COLMAP solution is calculated first for comparison to our SfM algorithm results.  We analyze errors in our point cloud by first 
+aligning our point cloud to COLMAP's reconstruction using an alignment algorithm called Kabsch-Umeyama. We ran our application on various datasets and collected the 
+following quantitative metrics:
+
+<ol>
+  <li> Camera pose metrics (mean, median, min, max)
+    <ol type="a">
+      <li>Rotational error</li>
+      <li>Translational error</li>
+    </ol>
+  </li>
+  <li> Point cloud metrics (mean, median, min, max)
+    <ol type="a">
+      <li>Distance error compared to baseline</li>
+      <li>Average reprojection error</li>
+    </ol>
+  </li>  
+    <li> Completeness metrics
+    <ol type="a">
+      <li>Percentage of points whose distance to baseline is under 0.1% of the scene size</li>
+      <li>Percentage of points whose distance to baseline is under 0.5% of the scene size</li>
+      <li>Percentage of points whose distance to baseline is under 1.0% of the scene size</li>
+    </ol>
+  </li>  
+</ol>
+Since we did not have actual measurements of the scenes, we defined the size of a scene to be the 
+length of the diagonal of the bounding box around all camera positions. This way, we can still measure 
+some degree of “completeness” without having a direct scale. We also defined the distance of a reconstructed 
+point to a baseline as the nearest-neighbor Euclidean distance. This is a unitless metric since we have no scale 
+information, and should mainly be interpreted within the context of each scene. For all metrics with possibly 
+ambiguous definitions, we provide exact equations we use in the Appendix A.
+<br>
+We also make a simplifying assumption that all image sets use a simple pinhole camera model, as well as a 
+single camera. Image datasets are chosen explicitly with these assumptions in mind. This means the extrinsic 
+and intrinsic camera parameters are common across every image, and the image dimensions are shared.
+<br>
+
+We organize our study as a survey into the performance of our SfM algorithm against various datasets, 
+and the interpretation of any issues that were encountered [4, 6, 17, 18, 19].   The results can be seen 
+for the datasets shown within Tables 1-3, as well as the corresponding visualization of the reconstructed 
+structures within Appendix C.  In the following section, we cover the results of datasets that exhibit behaviors of interest.
+<br>
+
+<figure>
+  <figcaption>Table 1. Camera Pose Estimation Error</figcaption>
+  <img src="media/table1.png">
+</figure>
+
+<figure>
+  <figcaption>Table 2. Point Cloud Sparesness</figcaption>
+  <img src="media/table2.png">
+</figure>
+
+<figure>
+  <figcaption>Table 3. Point Cloud Errors</figcaption>
+  <img src="media/table3.png">
+</figure>
 
 <h3>Qualitative Results</h3>
+This section provides qualitative case studies aimed at understanding the practical challenges of SfM.  We identify 
+the key challenges that were encountered from the reconstructed solutions, and link the quantitative results that were 
+summarized from Tables 1-3. For these cases, the FLANN matcher is used.  Standard algorithm settings are applied, except 
+for specific cases when noted. A windowing level of 10 images is set to improve computational efficiency.
+<br>
+For visualizing metrics directly when viewing the point cloud, we provide some color schemes for the points as seen in 
+Figure 2. The first color scheme represents the distance between a given point to the baseline. The second color scheme 
+represents the same thing, just with logarithmic scale, so that it is easier to see where deviations occur. The third color 
+scheme represents the average reprojection error of a point, averaged across all cameras which observe that point. The left 
+side of the colorbars represent minimal error and the right side represents maximal error. It is normalized for minimum and 
+maximum for each scene, so colors should not be interpreted across scenes.
+
+
+<figure>
+  <img src="media/fig2.png">
+  <figcaption>Figure 2 - Legend for interpreting the color visualization results.  The color map for (a) visualizes the linear difference in distance, (b) for the logarithmic difference in distance, and (c) the reprojection error are shown</figcaption>
+</figure>
+<br>
+
+<h4> Example 1: Good Case</h4>
+The results of the Erik_4 dataset in Figure 3 provides a good case of performance for the SfM algorithm.  
+This can be attributed to the quality of the images within the dataset.  With high contrast and good lighting 
+conditions, the SfM algorithm is able to easily pair keypoints between images.  Out of all the datasets provided, 
+the reprojection error found for this dataset was found to be the lowest.  The completeness of the point cloud was 
+also among the best found. It can be assumed that the geometric complexity when adjusting the points was more affine 
+in nature.
+
+<figure>
+  <img src="media/fig3.png">
+  <figcaption>Figure 3 - SfM results on the Erik_4 dataset. The (a) ground truth, (b) reconstructed structure, (c) difference in distance, (d) logarithmic difference in distance, and (e) reprojection error are shown.</figcaption>
+</figure>
+
+<br>
+<h4> Example 2: Bad Cases - Technical challenges for SfM and our approach</h4>
+In Figure 4, we look into the reconstruction of a Greek plaque.  This reconstruction runs into the challenge of point cloud sparsity. 
+This sparsity derives from repetitive keypoints that can match one another across images, creating ambiguity and false correspondences. 
+Figure 5 shows a case of some of the limitations inherent in our SfM pipeline.  When windowing is increased to allow more matches to occur 
+as seen in its reconstruction, errors can occur when Bundling Adjustments occur.
+
+<figure>
+  <img src="media/fig4.png">
+  <figcaption>Figure 4 - SfM results on the Erik_8 dataset.  The (a) ground truth, (b) reconstructed structure, (c) difference in distance, (d) logarithmic difference in distance, and (e) reprojection error are shown.</figcaption>
+</figure>
+<figure>
+  <img src="media/fig5.png">
+  <figcaption>Figure 5 - SfM results on the Epic Games’s cottage dataset.  The (a) ground truth, (b) reconstructed structure, (c) difference in distance, (d) logarithmic difference in distance, and (e) 
+    reprojection error are shown. As easiest seen in (c) and (d), this dataset drifts away from COLMAP’s reconstruction. This particular dataset has images which fully wrap around the entire structure. 
+    For such datasets, our pipeline is not robust enough to handle this loop-closure, and introduces some very visible errors. When we do not attempt to complete the loop and leave images out, (f) is 
+    produced and has very close accuracy to the baseline, but is incomplete.</figcaption>
+</figure>
+<h5> Cathedral Occlusion </h5>
+Our SfM algorithm can struggle with occlusions in the dataset images. As shown in Figure 6b below, some images in the cathedral dataset
+have trees blocking the main object of interest, leading to some noise in the point cloud along the right side. The heavy illumination 
+from the sun rays that are inconsistent between the dataset images due to the angle of the photo also hinder feature matching between the 
+images. These factors contribute to reprojection errors with bundle adjustment.
+
+<figure>
+  <img src="media/fig6.png">
+  <figcaption>Figure 6 - SfM results on the Cathedral dataset.  The (a) ground truth, (b) dataset image with occlusion (c) reconstructed structure, (d) difference in distance, (e) logarithmic difference in distance, and (f) reprojection error are shown</figcaption>
+</figure>
+
+<h5> Non-central Scene/Structures </h5>
+The standard SfM algorithm design does not expect to be surrounded by the structure it reconstructs, so there are some issues in finding 
+correspondences between images.  As a result, the reconstruction shows sparsity and lack of reprojection error correction. This result 
+was tested on a playground dataset from the ETH3D datasets [6]. The results of running our SfM algorithm can be seen for Figure 7.  
+An additional complexity is added to the dataset, which can be seen from Figure 7b - 2d.  Heavy illumination by sun glare in the camera 
+image reduces keypoint matches, while shading in an image creates 'fake' structures that may not truly exist. This fake structure can 
+then cause bias to occur in the optimization.
+<br>
+
+<figure>
+  <img src="media/fig7.png">
+  <figcaption>Figure 7 - SfM results on the ETH3D Playground Dataset. The (a) reconstruction encounters poor performance not only due to sparseness of correspondences.  The (b, c, d) images that provide issues for matching are shown.</figcaption>
+</figure>
+<br>
+
+<h4> Example 3: Larger Image Datasets</h4>
+To compare the performance of our SfM algorithm against larger image datasets, we chose a sample dataset of a Christmas decoration [17]. 
+From the dataset, 54 images were chosen that provided full-coverage of the structure.  The results can be seen in Figure 8.  It can be seen that 
+there is an issue with sparsity for parts of the reconstruction. This can be attributed to the limit placed on our SfM algorithm's bounding window, 
+which in effect causes a loss in potential keypoint matches to be added into the reconstruction.
+<br>
+
+<figure>
+  <img src="media/fig8.png">
+  <figcaption>Figure 8 - Performance of a larger 54 image dataset.  The (a) ground truth, (b) reconstructed structure, (c) difference in distance, (d) logarithmic difference in distance, and (e) reprojection error are shown.</figcaption>
+</figure>
+<br>
+
+<h4> Example 4: Comparison of Keypoint Matching Algorithm on Point Cloud Performance</h4>
+We next look at the performance differences of our SfM algorithm when utilizing the FLANN matching algorithm versus the Brute Force (BF) matching algorithm. 
+The results of the comparison are shown below in Tables 4-6.
+
+<figure>
+  <figcaption>Table 4: Difference of Camera Pose Estimation Errors (FLANN - BF)</figcaption>
+  <img src="media/table4.png">
+</figure>
+
+<figure>
+  <figcaption>Table 5: Point Cloud Sparseness Difference (FLANN - BF)</figcaption>
+  <img src="media/table5.png">
+</figure>
+
+<figure>
+  <figcaption>Table 6: Point Cloud Error Differences (FLANN - BF)</figcaption>
+  <img src="media/table6.png">
+</figure>
+Generally, our SfM Pipeline FLANN takes a little longer due to outputting many more matches that eventually get filtered out than the BF matcher. 
+The point clouds produced by the BF matcher produce more points in the point cloud, but accuracy is relatively similar between both matchers. 
+From examining the two scenes with the most changes, which is shown in Figure 9, the cathedral which has an additional matched camera using FLANN, 
+and erik_8 which has about 5000 more points in the point cloud when using BF, the point clouds still look quite similar. 
+<br>
+
+<figure>
+  <img src="media/fig9.png">
+  <figcaption>Figure 9 - SfM results on our own colosseum statue dataset.  The (a) ground truth, (b) reconstructed structure, (c) difference in distance, (d) logarithmic difference in distance, and (e) reprojection error are shown</figcaption>
+</figure>
+
+<h4> Example 5: Experimentation With Our Own Dataset</h4>
+To further test our SfM pipeline, it was applied to one of our own datasets. Using a statue of the Roman Colosseum as the object of 
+reference, a series of pictures were taken using an iPhone 16 Pro. The back wall and the right side of the Colosseum had some 
+differences compared to the COLMAP reconstruction, however our reconstruction still looks fairly accurate when compared to the statue.
+<figure>
+  <img src="media/fig10.png">
+  <figcaption>Figure 10 - SfM results on our own colosseum statue dataset.  The (a) ground truth, (b) reconstructed structure, (c) difference in distance, (d) logarithmic difference in distance, and (e) reprojection error are shown</figcaption>
+</figure>
+<br>
 
 <h3>Conclusion</h3>
+This report has described the implementation and analysis of a complete incremental Structure-from-Motion pipeline. On datasets 
+tailored for SfM (i.e. sufficient texture and contrast, low occlusion, low blur), the pipeline reliably generates accurate reconstructions 
+with very low reprojection error and strong alignment with COLMAP. These results indicate that given datasets with SfM-friendly characteristics, 
+our implementation is capable of generating accurate reconstructions with stable, incremental scene growth. 
+<br><br>
 
+While we were able to generate many accurate results, the wide variety of datasets we tested on revealed important limitations in our current design. 
+Reconstruction quality decreases significantly under difficult settings. Some of these settings include datasets where the camera faces outward to a 
+wider environment or follows a full loop around an object. These weak reconstructions indicate that while our core algorithm is correct, it needs to 
+be strengthened for robustness.
+<br><br>
+
+We have several ideas for improving the current approach given more time. Our image matching pipeline stage took up a significant portion of the total 
+execution time, this is because we perform matching pairwise within a window without considering the contents of the images themselves. This could be 
+greatly improved by first preprocessing the images and figuring out which images are likely to have the same correspondences with a cheap metric, then 
+only matching on those pairs. We also made simplifying assumptions that we would want to remove in an ideal implementation. For example, we always assumed 
+a pinhole camera for all images we processed, when in reality, many images actually are not following a pinhole model and include some level of distortion. 
+A more robust solution would be detecting the model, and applying any undistortion techniques that are necessary. We also would like to be able to expand 
+our pipeline's ability to handle more than one type of camera per dataset, such that multiple cameras can take pictures of a single scene, and we can 
+reconstruct reliably even despite irregular camera intrinsics.
 <br><br>
 <!-- References -->
 <h3>References</h3>
@@ -150,7 +385,7 @@ and add these calculated 3D points to our point cloud.  (TODO: Talk about PNP an
   <li>Lee, JongMin, and Sungjoo Yoo. "Dense-SfM: Structure from Motion with Dense Consistent Matching." Proceedings of the Computer Vision and Pattern Recognition Conference. 2025.</li>
   <li>Özyeşil, Onur, et al. "A survey of structure from motion*." Acta Numerica 26 (2017): 305-364.</li>
   <li>Iglhaut, Jakob, et al. "Structure from motion photogrammetry in forestry: A review." Current Forestry Reports 5.3 (2019): 155-168.</li>
-  <li>Erik-Norlin. (2024). Erik-Norlin/structure-from-motion: A project in Computer Vision and an implementation of structure from motion. <a href="https://github.com/sunbuny/3D-Recon_3D-DL_Datasets">GitHub.</a></li>
+  <li>Erik-Norlin. (2024). Erik-Norlin/structure-from-motion: A project in Computer Vision and an implementation of structure from motion. <a href="https://github.com/erik-norlin/Structure-From-Motion">GitHub.</a></li>
   <li>OpenCV Team. (2025). OpenCV documentation (Version 4.12). <a href="https://docs.opencv.org/"></a>OpenCV.</li>
   <li>T. Schöps, J. L. Schönberger, S. Galliani, T. Sattler, K. Schindler, M. Pollefeys, A. Geiger, "A Multi-View Stereo Benchmark with High-Resolution Images and Multi-Camera Videos", Conference on Computer Vision and Pattern Recognition (CVPR), 2017. 
   <a href="https://www.eth3d.net/data/schoeps2017cvpr.bib">[Bibtex]</a>
@@ -167,10 +402,96 @@ and add these calculated 3D points to our point cloud.  (TODO: Talk about PNP an
   <li>Schönberger, Johannes Lutz, and Jan-Michael Frahm. "Structure-from-Motion Revisited." Conference on Computer Vision and Pattern Recognition (CVPR), 2016.</li>
   <li>Schönberger, Johannes Lutz, et al. "Pixelwise View Selection for Unstructured Multi-View Stereo." European Conference on Computer Vision (ECCV), 2016.</li>
   <li>Kanazawa, Sotaro, et al. "User-Guided Correction of Reconstruction Errors in Structure-from-Motion." Proceedings of the 30th International Conference on Intelligent User Interfaces. 2025.</li>
-  <li>Umeyama, S. (1991). "Least-squares estimation of transformation parameters between two point patterns". IEEE Transactions on Pattern Analysis and Machine Intelligence. 13 (4): 376–380. <a href="https://ieeexplore.ieee.org/document/88573">doi:10.1109/34.88573.</a></li>
+  <li>Umeyama, S. (1991). "Least-squares estimation of transformation parameters between two point patterns". IEEE Transactions on Pattern Analysis and Machine Intelligence. 13 (4): 376-380. <a href="https://ieeexplore.ieee.org/document/88573">doi:10.1109/34.88573.</a></li>
+  <li>Epic Games. RealityScan Sample Datasets. Epic Developer Community, 2025, <a href="https://dev.epicgames.com/community/learning/tutorials/j20e/realityscan-sample-datasets">EpicGames.</a> Accessed 6 Dec. 2025.</li>
+  <li>Strecha, C.; Von Hansen, W.; Van Gool, L.; Fua, P.; Thoennessen, U. On benchmarking camera calibration and multi-view stereo for high resolution imagery. In Proceedings of the 2008 IEEE Conference on Computer Vision and Pattern Recognition, Anchorage, AK, USA, 23–28 June 2008.</li>
+  <li>sunbuny. (2018). sunbuny/3D-Recon_3D-DL_Datasets. <a href="https://github.com/sunbuny/3D-Recon_3D-DL_Datasets">GitHub.</a></li>
 </ol>
+<br>
+
+<!-- Appendix A. Metric Formulations -->
+<h3>Appendix A. Metric Formulations</h3>
+Distance error of point p compared to baseline GT:<br>
+<img src="media/dist_err.png"><br>
+Rotational error of an estimated camera rotation:<br>
+<img src="media/rot_err.png">
+
+
+<!-- Appendix B. How to Run the SfM Algorithm -->
+<h3>Appendix B. How to Run the SfM Algorithm</h3>
+For initial setup, the user should follow the README.md to setup their python environment.  To run the application, run the 
+'main.py' file. The only argument that needs to be passed is the directory of a dataset to use. If the directory is left blank, 
+there is a CLI selector to choose from datasets that we have pre-loaded. The user has the option to add more image datasets to the 
+'./dataset/misc/' folder for testing if desired; however the basic folder structure should follow what is provided in the './dataset/erik/' folder.
+
+<!-- Appendix C. SfM Algorithm Visualizations -->
+<h3>Appendix C. SfM Algorithm Visualizations</h3>
+The results of running our SfM algorithm can be seen for various datasets provided in this appendix. For each dataset, 
+we provide an image of the ground truth, the reconstructed structure, and color schema mapped visualizations based on our performance metrics.  
+
+<h4>Erik2</h4>
+<img src="media/erik2.png">
+<img src="media/gifs/erik2.gif">
 <br><br>
 
+<h4>Erik3</h4>
+<img src="media/erik3.png">
+<img src="media/gifs/erik3.gif">
+<br><br>
+
+<h4>Erik4</h4>
+<img src="media/erik4.png">
+<img src="media/gifs/erik4.gif">
+<br><br>
+
+<h4>Erik5</h4>
+<img src="media/erik5.png">
+<img src="media/gifs/erik5.gif">
+<br><br>
+
+<h4>Erik6</h4>
+<img src="media/erik6.png">
+<img src="media/gifs/erik6.gif">
+<br><br>
+
+<h4>Erik7</h4>
+<img src="media/erik7.png">
+<img src="media/gifs/erik7.gif">
+<br><br>
+
+<h4>Erik8</h4>
+<img src="media/erik8.png">
+<img src="media/gifs/erik8.gif">
+<br><br>
+
+<h4>Erik9</h4>
+<img src="media/erik9.png">
+<img src="media/gifs/erik9.gif">
+<br><br>
+
+<h4>Cathedral</h4>
+<img src="media/cathedral.png">
+<img src="media/gifs/cathedral.gif">
+<br><br>
+
+<h4>Red_fountain</h4>
+<img src="media/red_fountain.png">
+<img src="media/gifs/red_fountain.gif">
+<br><br>
+
+<h4>Hunting_tower2</h4>
+<img src="media/hunting_tower2.png">
+<img src="media/gifs/hunting_tower2.gif">
+<br><br>
+
+<h4>Christmas_decor</h4>
+<img src="media/christmas_decor.png">
+<img src="media/gifs/christmas_decor.gif">
+<br><br>
+
+<h4>Colosseum</h4>
+<img src="media/colosseum_rotated.png">
+<img src="media/gifs/colosseum_rotated.gif">
 
   <hr>
   <footer> 
