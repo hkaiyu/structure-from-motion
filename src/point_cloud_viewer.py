@@ -49,6 +49,11 @@ class PointCloudViewer(scene.SceneCanvas):
         self.chk_frustums.stateChanged.connect(self._toggleFrustrums)
         settings_layout.addWidget(self.chk_frustums)
 
+        self.chk_cycle = QtWidgets.QCheckBox("Auto-cycle")
+        self.chk_cycle.setChecked(False)
+        self.chk_cycle.stateChanged.connect(self._autoCycle)
+        settings_layout.addWidget(self.chk_cycle)
+
         self.color_dropdown = QtWidgets.QComboBox()
         self.color_dropdown.addItem("default")
         self.color_dropdown.currentIndexChanged.connect(self._onColorModeChanged)
@@ -75,8 +80,11 @@ class PointCloudViewer(scene.SceneCanvas):
         self.view.camera.distance = 10.0
         self.markers = scene.visuals.Markers(parent=self.view.scene)
         self.markers.set_gl_state("translucent", depth_test=True, blend=True)
-        self._timer = app.Timer(interval=1/30, connect=self.onTimer, start=True)
+        self.tick_rate = 1/30
+        self._timer = app.Timer(interval=self.tick_rate, connect=self.onTimer, start=True)
         self.events.close.connect(self._onClose)
+        self.color_time = 0
+        self.start_color_timer = False
 
         self.freeze()
 
@@ -138,7 +146,7 @@ class PointCloudViewer(scene.SceneCanvas):
             color = cam["color"]
 
             fx, fy, cx, cy = K[0, 0], K[1, 1], K[0, 2], K[1, 2]
-            scale = 0.0003 * (2 * cx + 2 * cy)
+            scale = 0.0001 * (2 * cx + 2 * cy)
             corners = np.array([
                 [-cx / fx, -cy / fy, 1.0],
                 [ cx / fx, -cy / fy, 1.0],
@@ -173,6 +181,9 @@ class PointCloudViewer(scene.SceneCanvas):
         mode = self.color_dropdown.currentText()
         self.current_color_mode = mode
 
+    def _autoCycle(self, state):
+        self.start_color_timer = (state == QtCore.Qt.Checked)
+
     def onTimer(self, event):
         with self._lock:
             pts = self.points3d.copy()
@@ -184,6 +195,20 @@ class PointCloudViewer(scene.SceneCanvas):
             self.markers.set_data(pts, face_color=rgba, size=5.0, edge_width=0)
         else:
             self.markers.set_data(np.empty((0, 3), np.float32))
+
+        if self.start_color_timer:
+            rotation_speed = 0.2
+            self.view.camera.azimuth = (self.view.camera.azimuth + rotation_speed) % 360
+            self.color_time += self.tick_rate
+            if (self.color_time >= 4.0):
+                self.color_time = 0
+                index = self.color_dropdown.currentIndex()
+                next_index = (index + 1) % self.color_dropdown.count()
+                self.color_dropdown.setCurrentIndex(next_index)
+                self.current_color_mode = self.color_dropdown.currentText()
+        else:
+            self.color_time = 0
+
 
     def _onClose(self, event):
         app.quit()
